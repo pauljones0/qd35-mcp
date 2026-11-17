@@ -47,13 +47,14 @@ def decode_frame(data: bytes, xor_payload: bool = False) -> Frame:
 class FrameStreamDecoder:
     """Buffers fragmented notifications and emits validated frames."""
 
-    def __init__(self, xor_payload: bool = False) -> None:
+    def __init__(self, xor_payload: bool = False, max_payload: int = 4096) -> None:
         self._buffer = bytearray()
         self._xor_payload = xor_payload
+        self._max_payload = max_payload
 
-    def feed(self, data: bytes) -> list[Frame]:
+    def feed(self, data: bytes) -> list[Frame | ProtocolError]:
         self._buffer.extend(data)
-        frames: list[Frame] = []
+        items: list[Frame | ProtocolError] = []
         while True:
             while self._buffer and self._buffer[0] not in (0xBB, 0xCC):
                 del self._buffer[0]
@@ -62,13 +63,28 @@ class FrameStreamDecoder:
             if self._buffer[1] != 0xEC:
                 del self._buffer[0]
                 continue
-            total = int.from_bytes(self._buffer[3:5], "big") + 6
+            payload_length = int.from_bytes(self._buffer[3:5], "big")
+            if payload_length > self._max_payload:
+                items.append(
+                    ProtocolError(
+                        f"declared payload {payload_length} exceeds {self._max_payload} bytes"
+                    )
+                )
+                del self._buffer[0]
+                continue
+            total = payload_length + 6
             if len(self._buffer) < total:
                 break
             raw = bytes(self._buffer[:total])
-            del self._buffer[:total]
-            frames.append(decode_frame(raw, self._xor_payload))
-        return frames
+            try:
+                items.append(decode_frame(raw, self._xor_payload))
+                del self._buffer[:total]
+            except ProtocolError as exc:
+                items.append(exc)
+                # Advance one byte and resynchronize instead of losing a valid frame
+                # that may follow a corrupt length/checksum.
+                del self._buffer[0]
+        return items
 
 
 def parse_volume(payload: bytes) -> dict[str, int]:
@@ -99,11 +115,14 @@ def parse_eq(payload: bytes) -> dict[str, object]:
     if len(payload) < 2:
         raise ProtocolError("custom EQ response is too short")
     preset, count = payload[:2]
+    expected = 2 + count * 6
+    if len(payload) < expected:
+        raise ProtocolError(
+            f"custom EQ declares {count} bands ({expected} bytes), received {len(payload)}"
+        )
     bands = []
-    for offset in range(2, min(len(payload), 2 + count * 6), 6):
+    for offset in range(2, expected, 6):
         record = payload[offset : offset + 6]
-        if len(record) < 6:
-            break
         gain_code = record[4]
         bands.append(
             {
@@ -114,18 +133,24 @@ def parse_eq(payload: bytes) -> dict[str, object]:
                 "q": record[5],
             }
         )
+    band_ids = [band["index"] for band in bands]
+    if sorted(band_ids) != list(range(count)):
+        raise ProtocolError(
+            f"custom EQ band IDs must be 0..{count - 1}, received {band_ids}"
+        )
+    bands.sort(key=lambda band: band["index"])
     return {"profile": preset, "band_count": count, "bands": bands}
 
 
 def parse_light(payload: bytes) -> dict[str, object]:
     if len(payload) < 2:
         raise ProtocolError("lighting response is too short")
+    if (len(payload) - 2) % 6:
+        raise ProtocolError("lighting response contains a truncated effect record")
     group, selected = payload[:2]
     effects = []
     for offset in range(2, len(payload), 6):
         record = payload[offset : offset + 6]
-        if len(record) < 6:
-            break
         wire_speed = record[5]
         effects.append(
             {
@@ -137,6 +162,11 @@ def parse_light(payload: bytes) -> dict[str, object]:
                 "wire_speed": wire_speed,
             }
         )
+    effect_ids = [effect["id"] for effect in effects]
+    if len(effect_ids) != len(set(effect_ids)):
+        raise ProtocolError("lighting response contains duplicate effect IDs")
+    if selected not in effect_ids:
+        raise ProtocolError(f"selected lighting effect {selected} has no state record")
     return {
         "group": group,
         "selected_effect_id": selected,

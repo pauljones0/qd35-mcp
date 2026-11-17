@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime
+from functools import wraps
 from typing import Any
 
 from . import constants as c
 from .config import Config
-from .errors import DangerousWritesDisabled, OutcomeUnknown, ProtocolError, WritesDisabled
+from .errors import (
+    DangerousWritesDisabled,
+    OutcomeUnknown,
+    ProtocolError,
+    QD35Error,
+    WritesDisabled,
+)
 from .protocol import (
     parse_eq,
     parse_eq_preset,
@@ -19,10 +27,22 @@ from .protocol import (
 from .transport.base import Transport
 
 
+def serialized_mutation(method: Any) -> Any:
+    """Keep each semantic read/modify/write/readback transaction atomic."""
+
+    @wraps(method)
+    async def wrapped(self: QD35Service, *args: object, **kwargs: object) -> object:
+        async with self._mutation_lock:
+            return await method(self, *args, **kwargs)
+
+    return wrapped
+
+
 class QD35Service:
     def __init__(self, transport: Transport, config: Config) -> None:
         self.transport = transport
         self.config = config
+        self._mutation_lock = asyncio.Lock()
 
     async def discover(self, timeout: float | None = None) -> dict[str, object]:
         devices = await self.transport.discover(timeout or self.config.scan_timeout)
@@ -57,7 +77,7 @@ class QD35Service:
         async def read(opcode: int, parser: Any) -> object:
             try:
                 return parser(await self._request(opcode))
-            except Exception as exc:
+            except QD35Error as exc:
                 return {"unavailable": True, "error": str(exc)}
 
         volume = await read(c.QUERY_VOLUME, parse_volume)
@@ -88,7 +108,7 @@ class QD35Service:
         return {
             "model": "Edifier QD35",
             "raw_d8": raw.hex(),
-            "live_verified_firmware": "1.3.0",
+            "observed_firmware": "1.3.0",
             "supported_tools": [
                 "status",
                 "volume",
@@ -115,6 +135,7 @@ class QD35Service:
             },
         }
 
+    @serialized_mutation
     async def set_volume(self, level: int) -> dict[str, object]:
         self._write_allowed()
         current = parse_volume(await self._request(c.QUERY_VOLUME))
@@ -124,6 +145,7 @@ class QD35Service:
         result = parse_volume(await self._request(c.QUERY_VOLUME))
         return {"applied": result["current"] == level, "volume": result}
 
+    @serialized_mutation
     async def set_input(self, source: str) -> dict[str, object]:
         self._write_allowed()
         source = source.lower()
@@ -136,6 +158,7 @@ class QD35Service:
         result = parse_input(await self._request(c.QUERY_INPUT))
         return {"applied": result["name"] == source, "input": result}
 
+    @serialized_mutation
     async def set_eq_preset(self, preset: str) -> dict[str, object]:
         self._write_allowed()
         preset = preset.lower()
@@ -145,6 +168,7 @@ class QD35Service:
         result = parse_eq_preset(await self._request(c.QUERY_EQ_PRESET))
         return {"applied": result["name"] == preset, "eq_preset": result}
 
+    @serialized_mutation
     async def set_eq_band(self, band: int, gain_db: float) -> dict[str, object]:
         self._write_allowed()
         if not -3 <= gain_db <= 3 or round(gain_db * 2) != gain_db * 2:
@@ -161,22 +185,25 @@ class QD35Service:
         await self._request(c.SET_EQ_PRESET, bytes((c.EQ_PRESETS["diy"],)))
         result = parse_eq(await self._request(c.QUERY_EQ))
         updated = result["bands"][band]
+        active_preset = parse_eq_preset(await self._request(c.QUERY_EQ_PRESET))
+        band_applied = (
+            updated["gain_db"] == gain_db
+            and updated["frequency_hz"] == frequency
+            and updated["q"] == record["q"]
+        )
         return {
-            "applied": updated["gain_db"] == gain_db,
+            "applied": band_applied and active_preset["name"] == "diy",
             "band": updated,
-            "active_preset": parse_eq_preset(await self._request(c.QUERY_EQ_PRESET)),
+            "active_preset": active_preset,
         }
 
     @staticmethod
     def _rgb(value: str) -> tuple[int, int, int]:
-        value = value.removeprefix("#")
-        if len(value) != 6:
+        if not re.fullmatch(r"#?[0-9A-Fa-f]{6}", value):
             raise ValueError("rgb must be a six-digit hex color such as #FF8800")
-        try:
-            return tuple(bytes.fromhex(value))  # type: ignore[return-value]
-        except ValueError as exc:
-            raise ValueError("rgb must contain only hexadecimal digits") from exc
+        return tuple(bytes.fromhex(value.removeprefix("#")))  # type: ignore[return-value]
 
+    @serialized_mutation
     async def set_light(
         self,
         effect: str | None = None,
@@ -197,7 +224,7 @@ class QD35Service:
         if effect_id not in records:
             raise ProtocolError(f"effect {effect_id} is not reported by this firmware")
         current = records[effect_id]
-        red, green, blue = self._rgb(rgb or current["rgb"])
+        red, green, blue = self._rgb(current["rgb"] if rgb is None else rgb)
         target_brightness = current["brightness"] if brightness is None else brightness
         if enabled is False:
             target_brightness = 0
@@ -219,11 +246,15 @@ class QD35Service:
         result = parse_light(await self._request(c.QUERY_LIGHT))
         selected = next(item for item in result["effects"] if item["id"] == effect_id)
         applied = (
-            result["selected_effect_id"] == effect_id
+            result["group"] == state["group"]
+            and result["selected_effect_id"] == effect_id
+            and selected["rgb"] == f"#{red:02X}{green:02X}{blue:02X}"
             and selected["brightness"] == target_brightness
+            and selected["wire_speed"] == wire_speed
         )
         return {"applied": applied, "lighting": result}
 
+    @serialized_mutation
     async def media_control(self, action: str) -> dict[str, object]:
         self._write_allowed()
         action = action.lower()
@@ -232,6 +263,7 @@ class QD35Service:
         response = await self._request(c.MEDIA_CONTROL, bytes((c.MEDIA_ACTIONS[action],)))
         return {"sent": True, "action": action, "acknowledgement": response.hex()}
 
+    @serialized_mutation
     async def sync_clock(self, clock_format: str = "preserve") -> dict[str, object]:
         self._write_allowed()
         if clock_format not in {"preserve", "12h", "24h"}:
@@ -252,6 +284,7 @@ class QD35Service:
             "response": response.hex(),
         }
 
+    @serialized_mutation
     async def set_ldac(self, mode: str) -> dict[str, object]:
         self._write_allowed()
         mode = mode.lower()
@@ -268,7 +301,11 @@ class QD35Service:
             }
         try:
             await self._request(c.SET_LDAC, bytes((expected,)))
-        except OutcomeUnknown:
+            # Some firmware acknowledges before its Bluetooth stack restarts.
+            await asyncio.sleep(0.25)
+            result = parse_ldac(await self._request(c.QUERY_LDAC))
+            return {"applied": result["value"] == expected, "changed": True, "ldac": result}
+        except QD35Error:
             await self.transport.disconnect()
             return {
                 "applied": None,
@@ -280,11 +317,8 @@ class QD35Service:
                     "Power-cycle/reconnect the speaker, then call qd35_get_status to verify LDAC."
                 ),
             }
-        # Some firmware may acknowledge without restarting; verify in that case.
-        await asyncio.sleep(0.25)
-        result = parse_ldac(await self._request(c.QUERY_LDAC))
-        return {"applied": result["value"] == expected, "changed": True, "ldac": result}
 
+    @serialized_mutation
     async def rename(self, name: str) -> dict[str, object]:
         self._write_allowed()
         encoded = name.strip().encode("utf-8")
@@ -307,11 +341,14 @@ class QD35Service:
                 "outcome": "expected_disconnect; verify physically or rediscover",
             }
 
+    @serialized_mutation
     async def power_off(self) -> dict[str, object]:
         return await self._disruptive(c.POWER_OFF, "power_off")
 
+    @serialized_mutation
     async def disconnect_audio(self) -> dict[str, object]:
         return await self._disruptive(c.DISCONNECT_AUDIO, "disconnect_audio")
 
+    @serialized_mutation
     async def factory_reset(self) -> dict[str, object]:
         return await self._disruptive(c.FACTORY_RESET, "factory_reset")

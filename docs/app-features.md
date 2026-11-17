@@ -4,19 +4,19 @@ This inventory combines the model-specific Edifier Connect operation manual, the
 
 | App function | Options/behavior | MCP status |
 |---|---|---|
-| Volume | Linked app/phone/speaker slider; live device range 0–16 | Implemented and live-verified |
-| Input | Bluetooth, AUX, USB audio | Implemented and live-verified |
-| EQ preset | Music, Game, Movie, DIY | Implemented and live-verified |
-| DIY EQ | Six bands: 62, 250, 1k, 4k, 8k, 16k Hz; ±3 dB | Implemented and live-verified |
-| Lighting | Effect, RGB/palette, brightness; speed on supported effects | Implemented against the seven effects reported by firmware 1.3.0 |
+| Volume | Linked app/phone/speaker slider; live device range 0–16 | Read live; same-value setter roundtrip observed |
+| Input | Bluetooth, AUX, USB audio | Read live; same-value setter roundtrip observed |
+| EQ preset | Music, Game, Movie, DIY | Read live; same-value setter roundtrip observed |
+| DIY EQ | Six bands: 62, 250, 1k, 4k, 8k, 16k Hz; ±3 dB | Read live; same-value band write observed |
+| Lighting | Effect, RGB/palette, brightness; speed on supported effects | Read live; same-value write observed for seven reported effects |
 | Media | Play, pause, previous, next | Implemented; affects the active Bluetooth player |
 | Built-in BGM | 32 app audio tracks across 10 categories, repeat/selection | Not bundled; these are app-local copyrighted media, not BLE-resident tracks |
 | Clock | Sync to host, 12-hour or 24-hour format | Implemented from app command definition |
 | LDAC | 96 kHz, 48/44.1 kHz, disabled | Implemented; Bluetooth restart observed live |
-| Device name/info | Rename; show address and firmware | Implemented and live-verified |
-| Bluetooth disconnect | Disconnect Classic audio | Implemented behind dangerous-operation gate |
-| Power off | Remote shutdown; no remote power-on | Implemented behind dangerous-operation gate |
-| Factory reset | Clear settings and pairing information | Implemented behind dangerous-operation gate |
+| Device name/info | Rename; show address and firmware | Identity/info read live; rename is app-confirmed and pending changed-value validation |
+| Bluetooth disconnect | Disconnect Classic audio | Implemented behind dangerous-operation gate; hardware validation pending |
+| Power off | Remote shutdown; no remote power-on | Implemented behind dangerous-operation gate; hardware validation pending |
+| Factory reset | Clear settings and pairing information | Implemented behind dangerous-operation gate; hardware validation pending |
 | Firmware update | Conditional OTA flow | Deliberately excluded from the agent surface |
 | Manual/store/profile | App navigation and web content | Not speaker controls |
 

@@ -15,9 +15,9 @@ The advertisement has no local name, which explains why a name-based initial sca
 
 Successful queries: capability block, firmware, name, Classic address, volume, input, EQ preset, six DIY bands, lighting group/effects, LDAC, playback status, audio status, and custom-light status. An app media-info event also arrived unsolicited, confirming the request matcher must ignore unrelated opcodes.
 
-## Reversible write validation
+## Same-value write observations
 
-Current values were written back and then queried:
+Current values were written back and then queried. This validates framing, replies, and readback plumbing, but an unchanged value alone cannot prove that firmware applied rather than ignored a setter:
 
 | Operation | Result |
 |---|---|
@@ -34,7 +34,9 @@ The LDAC negative was investigated with an unfiltered Bleak scan, BlueZ cache in
 
 ## Safety and remaining validation
 
-The user explicitly authorized destructive tests. Their final observed results are added here after the release validation run. Firmware update remains excluded because a failed OTA can brick hardware and is not needed for ordinary agent control.
+The user explicitly authorized changed-value and destructive tests. After the LDAC test, the speaker did not resume advertising during repeated broad scans; a physical unplug/replug still left it absent until it is explicitly powered on and placed on Bluetooth input. Changed-value/restore, rename, audio disconnect, factory reset, and shutdown therefore remain pending and are not represented above as verified.
+
+Firmware update remains excluded because a failed OTA can brick hardware and is not needed for ordinary agent control.
 
 Run unit/simulator checks with `uv run pytest`. Hardware tests are intentionally manual because they operate a real nearby speaker.
 

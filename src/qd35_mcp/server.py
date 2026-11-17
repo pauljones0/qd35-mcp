@@ -96,7 +96,7 @@ def create_server(service: QD35Service | None = None) -> MCPServer:
     )
     async def qd35_set_light(
         effect: str | None = None,
-        rgb: str | None = None,
+        rgb: Annotated[str | None, Field(pattern=r"^#?[0-9A-Fa-f]{6}$")] = None,
         brightness: Annotated[int | None, Field(ge=0, le=100)] = None,
         speed: Annotated[int | None, Field(ge=1, le=10)] = None,
         enabled: bool | None = None,

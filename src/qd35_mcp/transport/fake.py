@@ -1,15 +1,39 @@
 from __future__ import annotations
 
 from .. import constants as c
-from ..errors import DeviceNotFound
+from ..errors import DeviceNotFound, OutcomeUnknown
 from .base import DeviceCandidate, Transport
 
 
 class FakeTransport(Transport):
     """Deterministic QD35 simulator for setup, agent evaluation, and tests."""
 
+    @staticmethod
+    def _default_light_records() -> dict[int, list[int]]:
+        return {
+            1: [1, 1, 0, 0, 100, 5],
+            2: [2, 1, 0, 0, 100, 3],
+            3: [3, 230, 230, 255, 100, 255],
+            4: [4, 230, 230, 255, 100, 3],
+            5: [5, 180, 118, 255, 100, 255],
+            6: [6, 230, 230, 255, 100, 255],
+            7: [7, 0, 0, 0, 100, 255],
+        }
+
+    @staticmethod
+    def _default_bands() -> list[list[int]]:
+        return [
+            [0, 0, 0, 62, 6, 7],
+            [1, 0, 0, 250, 6, 7],
+            [2, 0, 3, 232, 6, 7],
+            [3, 0, 15, 160, 6, 7],
+            [4, 0, 31, 64, 6, 7],
+            [5, 0, 62, 128, 6, 7],
+        ]
+
     def __init__(self) -> None:
         self._connected = False
+        self.powered = True
         self.volume = 6
         self.maximum = 16
         self.input_group = 2
@@ -20,23 +44,8 @@ class FakeTransport(Transport):
         self.firmware = bytes((1, 3, 0))
         self.light_group = 1
         self.light_selected = 4
-        self.light_records = {
-            1: [1, 1, 0, 0, 100, 5],
-            2: [2, 1, 0, 0, 100, 3],
-            3: [3, 230, 230, 255, 100, 255],
-            4: [4, 230, 230, 255, 100, 3],
-            5: [5, 180, 118, 255, 100, 255],
-            6: [6, 230, 230, 255, 100, 255],
-            7: [7, 0, 0, 0, 100, 255],
-        }
-        self.bands = [
-            [0, 0, 0, 62, 6, 7],
-            [1, 0, 0, 250, 6, 7],
-            [2, 0, 3, 232, 6, 7],
-            [3, 0, 15, 160, 6, 7],
-            [4, 0, 31, 64, 6, 7],
-            [5, 0, 62, 128, 6, 7],
-        ]
+        self.light_records = self._default_light_records()
+        self.bands = self._default_bands()
         self.device = DeviceCandidate(
             address="FA:KE:QD:35:00:01",
             name=self.name,
@@ -52,9 +61,11 @@ class FakeTransport(Transport):
         return self._connected
 
     async def discover(self, timeout: float) -> list[DeviceCandidate]:
-        return [self.device]
+        return [self.device] if self.powered else []
 
     async def connect(self, device: str | None = None) -> DeviceCandidate:
+        if not self.powered:
+            raise DeviceNotFound("simulated speaker is powered off")
         if device and device not in {self.device.address, "fake"}:
             raise DeviceNotFound(f"simulated device {device!r} does not exist")
         self._connected = True
@@ -64,6 +75,8 @@ class FakeTransport(Transport):
         self._connected = False
 
     async def request(self, opcode: int, payload: bytes = b"", timeout: float = 4) -> bytes:
+        if not self.powered:
+            raise DeviceNotFound("simulated speaker is powered off")
         if not self._connected:
             await self.connect()
         if opcode == c.QUERY_VOLUME:
@@ -98,7 +111,8 @@ class FakeTransport(Transport):
             return bytes((self.ldac,))
         if opcode == c.SET_LDAC:
             self.ldac = payload[0]
-            return b"\x01"
+            self._connected = False
+            raise OutcomeUnknown("simulated Bluetooth restart after LDAC change")
         if opcode == c.QUERY_FIRMWARE:
             return self.firmware
         if opcode == c.QUERY_NAME:
@@ -110,12 +124,22 @@ class FakeTransport(Transport):
             return bytes.fromhex("64687664370d")
         if opcode == c.QUERY_CAPABILITIES:
             return bytes.fromhex("0000010401010100000001010a0c0a00002004830401")
-        if opcode in {
-            c.MEDIA_CONTROL,
-            c.SYNC_CLOCK,
-            c.POWER_OFF,
-            c.DISCONNECT_AUDIO,
-            c.FACTORY_RESET,
-        }:
+        if opcode == c.POWER_OFF:
+            self.powered = False
+            self._connected = False
+            return b"\x01"
+        if opcode == c.FACTORY_RESET:
+            self.volume = 6
+            self.input_group = 2
+            self.input_value = 1
+            self.eq_preset = 0
+            self.ldac = 0
+            self.name = "EDIFIER QD35 (simulated)"
+            self.light_group = 1
+            self.light_selected = 4
+            self.light_records = self._default_light_records()
+            self.bands = self._default_bands()
+            return b"\x01"
+        if opcode in {c.MEDIA_CONTROL, c.SYNC_CLOCK, c.DISCONNECT_AUDIO}:
             return b"\x01"
         return b""

@@ -1,9 +1,11 @@
+import asyncio
 from dataclasses import replace
 
 import pytest
 
+from qd35_mcp import constants as c
 from qd35_mcp.config import Config
-from qd35_mcp.errors import DangerousWritesDisabled
+from qd35_mcp.errors import DangerousWritesDisabled, DeviceNotFound
 from qd35_mcp.service import QD35Service
 from qd35_mcp.transport.fake import FakeTransport
 
@@ -50,3 +52,96 @@ async def test_dangerous_operations_are_separately_gated(config: Config) -> None
         await service.factory_reset()
     enabled = QD35Service(FakeTransport(), replace(config, dangerous_writes_enabled=True))
     assert (await enabled.factory_reset())["sent"] is True
+
+
+async def test_rgb_rejects_empty_and_non_hex_values(service: QD35Service) -> None:
+    for value in ("", "12 3456", "GG0000", "#12345"):
+        with pytest.raises(ValueError, match="six-digit hex"):
+            await service.set_light(rgb=value)
+
+
+class IgnoredLightFieldsTransport(FakeTransport):
+    async def request(self, opcode: int, payload: bytes = b"", timeout: float = 4) -> bytes:
+        if opcode == c.SET_LIGHT:
+            record = self.light_records[payload[1]]
+            self.light_selected = payload[1]
+            record[4] = payload[5]
+            return payload
+        return await super().request(opcode, payload, timeout)
+
+
+async def test_light_requires_all_requested_fields_in_readback(config: Config) -> None:
+    service = QD35Service(IgnoredLightFieldsTransport(), config)
+    result = await service.set_light("breathing", "#123456", 30, 4)
+    assert result["applied"] is False
+
+
+class YieldingFakeTransport(FakeTransport):
+    async def request(self, opcode: int, payload: bytes = b"", timeout: float = 4) -> bytes:
+        await asyncio.sleep(0)
+        return await super().request(opcode, payload, timeout)
+
+
+async def test_partial_light_transactions_are_serialized(config: Config) -> None:
+    service = QD35Service(YieldingFakeTransport(), config)
+    rgb_result, brightness_result = await asyncio.gather(
+        service.set_light(rgb="#123456"),
+        service.set_light(brightness=20),
+    )
+    assert rgb_result["applied"] is True
+    assert brightness_result["applied"] is True
+    status = await service.status()
+    selected = next(
+        item
+        for item in status["lighting"]["effects"]
+        if item["id"] == status["lighting"]["selected_effect_id"]
+    )
+    assert selected["rgb"] == "#123456"
+    assert selected["brightness"] == 20
+
+
+class AckThenDisappearTransport(FakeTransport):
+    def __init__(self) -> None:
+        super().__init__()
+        self.restarting = False
+
+    async def request(self, opcode: int, payload: bytes = b"", timeout: float = 4) -> bytes:
+        if opcode == c.SET_LDAC:
+            self.ldac = payload[0]
+            self.restarting = True
+            return b"\x01"
+        if opcode == c.QUERY_LDAC and self.restarting:
+            self._connected = False
+            raise DeviceNotFound("radio restarting")
+        return await super().request(opcode, payload, timeout)
+
+
+async def test_ldac_ack_then_disconnect_returns_recovery(config: Config) -> None:
+    service = QD35Service(AckThenDisappearTransport(), config)
+    result = await service.set_ldac("48khz")
+    assert result["applied"] is None
+    assert result["bluetooth_restarted"] is True
+    assert "Power-cycle" in result["suggested_action"]
+
+
+async def test_simulated_reset_and_power_off_have_real_state_effects(config: Config) -> None:
+    enabled = replace(config, dangerous_writes_enabled=True)
+    transport = FakeTransport()
+    service = QD35Service(transport, enabled)
+    await service.set_volume(12)
+    await service.set_light(rgb="#123456", brightness=20)
+    await service.factory_reset()
+    status = await service.status()
+    assert status["volume"]["current"] == 6
+    selected = next(
+        item
+        for item in status["lighting"]["effects"]
+        if item["id"] == status["lighting"]["selected_effect_id"]
+    )
+    assert selected["rgb"] == "#E6E6FF"
+    assert selected["brightness"] == 100
+
+    await service.power_off()
+    assert (await service.discover())["count"] == 0
+    with pytest.raises(DeviceNotFound, match="powered off"):
+        await service.status()

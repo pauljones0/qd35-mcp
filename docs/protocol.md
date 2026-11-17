@@ -44,7 +44,7 @@ Captured from a physical speaker identified by `C9` as `EDIFIER QD35`:
 | `C9` name | UTF-8 | `EDIFIER QD35` |
 | `D8` capability block | 22 bytes | raw value retained in `qd35_get_capabilities` |
 
-Confirmed setter/request pairs:
+Implemented request/setter pairs. Definitions are app-confirmed; the same-value volume, input, EQ, and lighting roundtrips were observed live, while changed-value and disruptive validation is tracked separately in `hardware-validation.md`:
 
 | Function | Query | Set/action | Payload |
 |---|---:|---:|---|

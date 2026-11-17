@@ -4,7 +4,13 @@ import asyncio
 from typing import Any
 
 from .. import constants as c
-from ..errors import DeviceNotFound, OutcomeUnknown, ProtocolError, RequestTimeout
+from ..errors import (
+    DeviceNotFound,
+    OutcomeUnknown,
+    ProtocolError,
+    RequestTimeout,
+    TransportError,
+)
 from ..protocol import Frame, FrameStreamDecoder, encode_frame
 from .base import DeviceCandidate, Transport
 
@@ -16,8 +22,9 @@ class BleakTransport(Transport):
         self._client: Any = None
         self._device: Any = None
         self._candidate: DeviceCandidate | None = None
-        self._queue: asyncio.Queue[Frame] = asyncio.Queue()
-        self._lock = asyncio.Lock()
+        self._queue: asyncio.Queue[Frame | ProtocolError] = asyncio.Queue()
+        self._request_lock = asyncio.Lock()
+        self._lifecycle_lock = asyncio.Lock()
         self._decoder = FrameStreamDecoder()
         self._xor_payload = False
 
@@ -44,7 +51,10 @@ class BleakTransport(Transport):
         kwargs: dict[str, object] = {"service_uuids": [c.SEARCH_UUID]}
         if self.adapter:
             kwargs["adapter"] = self.adapter
-        found = await BleakScanner.discover(timeout=timeout, return_adv=True, **kwargs)
+        try:
+            found = await BleakScanner.discover(timeout=timeout, return_adv=True, **kwargs)
+        except Exception as exc:
+            raise TransportError(f"Bluetooth scan failed: {exc}") from exc
         matches = []
         for device, advertisement in found.values():
             candidate = self._candidate_from(device, advertisement)
@@ -56,93 +66,161 @@ class BleakTransport(Transport):
         return [candidate for _, _, candidate in await self._scan(timeout)]
 
     async def connect(self, device: str | None = None) -> DeviceCandidate:
-        if (
-            self.connected
-            and self._candidate
-            and (device is None or device == self._candidate.address)
-        ):
-            return self._candidate
-        await self.disconnect()
-        matches = await self._scan(self.scan_timeout)
-        if device:
-            matches = [item for item in matches if item[2].address.lower() == device.lower()]
-        if not matches:
-            raise DeviceNotFound("No QD35 advertising the a400 service was found")
-        if len(matches) > 1 and not device:
-            addresses = ", ".join(item[2].address for item in matches)
-            raise DeviceNotFound(f"Multiple QD35 candidates found; set QD35_DEVICE: {addresses}")
-        self._device, _, self._candidate = matches[0]
-        selector = self._candidate.encryption_selector or 0
-        if selector not in (0, 0x10):
-            raise ProtocolError(f"unsupported QD35 encryption selector 0x{selector:02x}")
-        self._xor_payload = selector == 0x10
-        self._decoder = FrameStreamDecoder(self._xor_payload)
+        async with self._request_lock:
+            return await self._connect_locked(device)
 
-        from bleak import BleakClient
+    async def _connect_locked(self, device: str | None = None) -> DeviceCandidate:
+        async with self._lifecycle_lock:
+            if (
+                self.connected
+                and self._candidate
+                and (device is None or device.lower() == self._candidate.address.lower())
+            ):
+                return self._candidate
+            await self._disconnect_locked()
+            matches = await self._scan(self.scan_timeout)
+            if device:
+                matches = [
+                    item for item in matches if item[2].address.lower() == device.lower()
+                ]
+            if not matches:
+                raise DeviceNotFound("No QD35 advertising the a400 service was found")
+            if len(matches) > 1 and not device:
+                addresses = ", ".join(item[2].address for item in matches)
+                raise DeviceNotFound(
+                    f"Multiple QD35 candidates found; set QD35_DEVICE: {addresses}"
+                )
+            next_device, _, next_candidate = matches[0]
+            selector = next_candidate.encryption_selector or 0
+            if selector not in (0, 0x10):
+                raise ProtocolError(
+                    f"unsupported QD35 encryption selector 0x{selector:02x}"
+                )
+            xor_payload = selector == 0x10
+            decoder = FrameStreamDecoder(xor_payload)
+            queue: asyncio.Queue[Frame | ProtocolError] = asyncio.Queue()
 
-        kwargs: dict[str, object] = {"timeout": 15, "disconnected_callback": self._on_disconnect}
-        if self.adapter:
-            kwargs["adapter"] = self.adapter
-        self._client = BleakClient(self._device, **kwargs)
-        await self._client.connect()
-        await self._client.start_notify(c.READ_UUID, self._on_notification)
-        return self._candidate
+            from bleak import BleakClient
 
-    def _on_disconnect(self, _client: Any) -> None:
-        self._client = None
+            client: Any = None
 
-    def _on_notification(self, _characteristic: Any, data: bytearray) -> None:
-        try:
-            for frame in self._decoder.feed(bytes(data)):
-                self._queue.put_nowait(frame)
-        except ProtocolError:
-            # A malformed notification cannot safely satisfy a pending request.
+            def on_disconnect(disconnected_client: Any) -> None:
+                # An obsolete client's late callback must not clear a newer session.
+                if self._client is disconnected_client:
+                    self._client = None
+
+            def on_notification(_characteristic: Any, data: bytearray) -> None:
+                for item in decoder.feed(bytes(data)):
+                    queue.put_nowait(item)
+
+            kwargs: dict[str, object] = {
+                "timeout": 15,
+                "disconnected_callback": on_disconnect,
+            }
+            if self.adapter:
+                kwargs["adapter"] = self.adapter
+            try:
+                client = BleakClient(next_device, **kwargs)
+                await client.connect()
+                await client.start_notify(c.READ_UUID, on_notification)
+                if not client.is_connected:
+                    raise TransportError("device disconnected during notification setup")
+            except asyncio.CancelledError:
+                if client is not None:
+                    await self._cleanup_client(client)
+                raise
+            except Exception as exc:
+                if client is not None:
+                    await self._cleanup_client(client)
+                raise TransportError(f"Bluetooth connection setup failed: {exc}") from exc
+
+            # Publish only a fully connected, subscribed session.
+            self._device = next_device
+            self._candidate = next_candidate
+            self._xor_payload = xor_payload
+            self._decoder = decoder
+            self._queue = queue
+            self._client = client
+            return next_candidate
+
+    @staticmethod
+    async def _cleanup_client(client: Any) -> None:
+        if not getattr(client, "is_connected", False):
             return
+        try:
+            await client.stop_notify(c.READ_UUID)
+        except Exception:
+            pass
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
 
     async def disconnect(self) -> None:
+        async with self._request_lock:
+            async with self._lifecycle_lock:
+                await self._disconnect_locked()
+
+    async def _disconnect_locked(self) -> None:
         client, self._client = self._client, None
-        if client and client.is_connected:
-            try:
-                await client.stop_notify(c.READ_UUID)
-            except Exception:
-                pass
-            await client.disconnect()
+        if client:
+            await self._cleanup_client(client)
         while not self._queue.empty():
             self._queue.get_nowait()
 
     async def request(self, opcode: int, payload: bytes = b"", timeout: float = 4) -> bytes:
-        async with self._lock:
+        async with self._request_lock:
             if not self.connected:
-                await self.connect(self._candidate.address if self._candidate else None)
+                await self._connect_locked(self._candidate.address if self._candidate else None)
             while not self._queue.empty():
                 self._queue.get_nowait()
             packet = encode_frame(opcode, payload, self._xor_payload)
             try:
                 await self._client.write_gatt_char(c.WRITE_UUID, packet, response=False)
+            except asyncio.CancelledError:
+                await self._invalidate_locked()
+                raise
             except Exception as exc:
                 if not self.connected:
+                    await self._invalidate_locked()
                     raise OutcomeUnknown(
                         f"connection dropped while writing opcode 0x{opcode:02X}"
                     ) from exc
-                raise
+                raise TransportError(
+                    f"Bluetooth write failed for opcode 0x{opcode:02X}: {exc}"
+                ) from exc
             deadline = asyncio.get_running_loop().time() + timeout
             while True:
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
-                    if not self.connected:
+                    disconnected = not self.connected
+                    await self._invalidate_locked()
+                    if disconnected:
                         raise OutcomeUnknown(
                             f"connection dropped after opcode 0x{opcode:02X}; "
                             "physical outcome unknown"
                         )
                     raise RequestTimeout(f"no response for opcode 0x{opcode:02X}")
                 try:
-                    frame = await asyncio.wait_for(self._queue.get(), remaining)
+                    item = await asyncio.wait_for(self._queue.get(), remaining)
+                except asyncio.CancelledError:
+                    await self._invalidate_locked()
+                    raise
                 except TimeoutError as exc:
-                    if not self.connected:
+                    disconnected = not self.connected
+                    await self._invalidate_locked()
+                    if disconnected:
                         raise OutcomeUnknown(
                             f"connection dropped after opcode 0x{opcode:02X}; "
                             "physical outcome unknown"
                         ) from exc
                     raise RequestTimeout(f"no response for opcode 0x{opcode:02X}") from exc
-                if frame.opcode == opcode:
-                    return frame.payload
+                if isinstance(item, ProtocolError):
+                    await self._invalidate_locked()
+                    raise item
+                if item.opcode == opcode:
+                    return item.payload
+
+    async def _invalidate_locked(self) -> None:
+        async with self._lifecycle_lock:
+            await self._disconnect_locked()
