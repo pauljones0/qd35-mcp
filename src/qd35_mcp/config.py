@@ -33,6 +33,8 @@ class Config:
     alarm_allowed_hosts: tuple[str, ...] = ()
     timezone: str | None = None
     timezone_state_path: str | None = None
+    custom_display_firmware: bool = False
+    firmware_install_enabled: bool = False
 
     def __post_init__(self) -> None:
         if self.transport not in {"bleak", "fake"}:
@@ -67,4 +69,8 @@ class Config:
             timezone=(os.getenv("QD35_TIMEZONE") or "").strip() or None,
             timezone_state_path=(os.getenv("QD35_TIMEZONE_STATE_PATH") or "").strip()
             or None,
+            custom_display_firmware=_enabled(
+                "QD35_CUSTOM_DISPLAY_FIRMWARE", transport == "fake"
+            ),
+            firmware_install_enabled=_enabled("QD35_ENABLE_FIRMWARE_INSTALL"),
         )

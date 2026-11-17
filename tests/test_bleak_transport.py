@@ -219,6 +219,56 @@ async def test_large_frame_refuses_unvalidated_fragmentation(
     assert client.writes == []
 
 
+async def test_ota_fragmentation_matches_current_edifier_app(
+    transport: BleakTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await transport.connect()
+    client = MockClient.instances[0]
+    characteristic = SimpleNamespace(max_write_without_response_size=500)
+    client.services = SimpleNamespace(get_characteristic=lambda _uuid: characteristic)
+    sleeps: list[float] = []
+
+    async def record_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(bleak_module.asyncio, "sleep", record_sleep)
+    packet = bytes(index % 256 for index in range(520))
+    await transport._write_fragmented_packet_locked(packet)
+    assert client.writes == [packet[:500], packet[500:]]
+    assert sleeps == [0.3]
+
+
+async def test_ota_state_machine_follows_device_requested_chunk_size(
+    transport: BleakTransport,
+) -> None:
+    await transport.connect()
+    client = MockClient.instances[0]
+    client.services = SimpleNamespace(
+        get_characteristic=lambda _uuid: SimpleNamespace(
+            max_write_without_response_size=500
+        )
+    )
+    writes: list[bytes] = []
+
+    async def ota_write(_uuid: str, packet: bytes, response: bool = False) -> None:
+        writes.append(packet)
+        if packet[2] == c.OTA_READY:
+            client.notification_callback(None, reply(c.OTA_TRANSFER, b"\x00\x00\x10"))
+        elif packet[2] == c.OTA_TRANSFER and packet[6] == 0:
+            client.notification_callback(None, reply(c.OTA_TRANSFER, b"\x00\x00\x10"))
+
+    client.write_gatt_char = ota_write
+    image = bytes(range(40))
+    result = await transport.ota_update(image, (1, 3, 0))
+    assert result["bytes_sent"] == 40
+    assert result["chunks_sent"] == 3
+    assert writes[0][2] == c.OTA_READY
+    assert writes[0][5:14] == len(image).to_bytes(4, "big") + b"\x01\x03\x00\x02\x00"
+    payloads = [packet[5:-1] for packet in writes[1:]]
+    assert [payload[:2] for payload in payloads] == [b"\x00\x00", b"\x00\x00", b"\x00\x01"]
+    assert b"".join(payload[2:] for payload in payloads) == image
+
+
 async def test_custom_chunk_timeout_keeps_session_for_same_chunk_retry(
     transport: BleakTransport,
 ) -> None:

@@ -39,4 +39,10 @@
   alarms reinforce their named zone and clock results report the zone actually serialized.
 - Optional bedtime preparation uses a separate preceding-night timer to apply the low overnight
   light state without selecting input, changing volume, starting playback, or touching Classic audio.
+- Optional exact-hash display firmware adds independent clock, EDIFIER logo, status-symbol,
+  whole-display, brightness 0–7, right-side-lighting-control, and raw CMS1640 control.
+- Bundled original 400-byte patch, deterministic stock-hash patcher, exact-stock rollback,
+  recovered OTA v2 transport, and fixed-purpose gated MCP install/restore tools.
+- Live 320-chunk patched-image OTA plus semantic, brightness, raw-grid, reset, dial-follow,
+  normal lighting readback, and ordinary status-continuity validation on firmware 1.3.0.
 

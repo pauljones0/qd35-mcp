@@ -41,9 +41,10 @@ container header with separate MCU and Bluetooth image lengths; the recovered QD
 file is a raw single Cortex-M image and does not have that header. The application
 also changes the NEW-X/QD35 lighting state before starting the transfer.
 
-This is sufficient to retrieve and inspect the correct image. It is not sufficient
-reason to reflash an already-current speaker: rollback, bootloader recovery, power-
-loss behavior, and signature/integrity enforcement have not been established.
+This is sufficient to retrieve, inspect, exact-hash validate, and transfer the
+correct image. The optional display patch now uses that recovered single-image OTA
+flow and includes an exact-stock restore mode. Power-loss recovery is still not
+established, so installation remains separately and explicitly gated.
 
 ## Custom-animation storage path
 
@@ -194,7 +195,7 @@ display-off `0x80`. Waking the speaker reinitializes the display and turns the
 wordmark back on. Standby also takes the speaker out of its normal active Bluetooth
 audio state, so it does not satisfy “clock off while Bluetooth stays connected.”
 
-Consequently, stock firmware 1.3.0 supports these combinations:
+Consequently, unmodified stock firmware 1.3.0 supports these combinations:
 
 | Requested state | Stock result |
 |---|---|
@@ -205,11 +206,13 @@ Consequently, stock firmware 1.3.0 supports these combinations:
 | Clock/logo brightness adjustment | not exposed; hard-coded maximum |
 | All lights and displays off | supported only through speaker standby |
 
-A modified lighting-MCU image could blank the digit grids, clear the wordmark grid,
-or send a lower CMS1640 brightness command independently. Doing that dynamically
-would also require a safe command path from the BES Bluetooth firmware, and OTA
-rollback/recovery is not established. These are firmware-patch possibilities, not
-capabilities that the MCP should advertise today.
+The project's optional patch implements those formerly hypothetical controls. It
+reuses otherwise-invalid lighting effect zero as a private, magic-guarded command
+path, hooks the common display writer, and keeps its state in volatile SRAM. It can
+mask digits, logo, and other symbol bits independently; issue display off; select
+brightness commands `0x88..0x8F`; follow the ordinary 0–100 lighting value; and use
+all eight raw grid bytes. The normal power-on default is unchanged. See
+`display-firmware.md` for the memory map, hashes, rollback process, and live tests.
 
 ## Lighting-MCU command inventory
 
@@ -228,10 +231,11 @@ Bluetooth/audio controller:
 +OTA+RDY
 ```
 
-There is no `DISPLAY`, `CLOCK OFF`, `LOGO`, segment-RAM, or display-brightness
+There is no stock `DISPLAY`, `CLOCK OFF`, `LOGO`, segment-RAM, or display-brightness
 command token or parser branch. Searches of Edifier Connect 8.4.33 and 8.5.5 also
 found no corresponding QD35 command builder. This rules out a merely hidden app UI
-control for the stock protocol; it does not rule out a future custom-firmware path.
+control for the stock protocol. The optional open patch supplies the missing custom
+path without claiming that it was present in Edifier's protocol.
 
 ## Confidence and limits
 

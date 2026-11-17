@@ -335,6 +335,114 @@ class BleakTransport(Transport):
             )
         await self._client.write_gatt_char(c.WRITE_UUID, packet, response=False)
 
+    async def _write_fragmented_packet_locked(
+        self,
+        packet: bytes,
+        fragment_size: int = 500,
+        gap_seconds: float = 0.3,
+    ) -> None:
+        """Reproduce Edifier Connect's OTA-only protocol-frame fragmentation."""
+        maximum = await self._prepare_large_write_locked(fragment_size)
+        if maximum < fragment_size:
+            raise TransportError(
+                f"negotiated ATT capacity {maximum} is below OTA fragment {fragment_size}"
+            )
+        for offset in range(0, len(packet), fragment_size):
+            fragment = packet[offset : offset + fragment_size]
+            await self._client.write_gatt_char(c.WRITE_UUID, fragment, response=False)
+            if offset + fragment_size < len(packet):
+                await asyncio.sleep(gap_seconds)
+
+    async def _wait_for_opcode_locked(self, opcode: int, timeout: float) -> bytes:
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise RequestTimeout(f"no response for opcode 0x{opcode:02X}")
+            try:
+                item = await asyncio.wait_for(self._queue.get(), remaining)
+            except TimeoutError as exc:
+                raise RequestTimeout(f"no response for opcode 0x{opcode:02X}") from exc
+            if isinstance(item, ProtocolError):
+                raise item
+            if item.opcode == opcode:
+                return item.payload
+
+    async def ota_update(
+        self,
+        image: bytes,
+        version: tuple[int, int, int],
+    ) -> dict[str, object]:
+        """Transfer firmware exactly as Edifier Connect 8.5.5 does for ordinary OTA."""
+        if not image:
+            raise ValueError("OTA image cannot be empty")
+        if len(version) != 3 or any(not 0 <= part <= 255 for part in version):
+            raise ValueError("OTA version must contain three bytes")
+        async with self._request_lock:
+            if not self.connected:
+                await self._connect_locked(self._candidate.address if self._candidate else None)
+            while not self._queue.empty():
+                self._queue.get_nowait()
+            # The app advertises 512 as its protocol request size while the BLE
+            # layer negotiates/splits at 500 bytes.
+            ready = len(image).to_bytes(4, "big") + bytes(version) + (512).to_bytes(2, "big")
+            try:
+                await self._write_packet_locked(encode_frame(c.OTA_READY, ready, self._xor_payload))
+                reply = await self._wait_for_opcode_locked(c.OTA_TRANSFER, 20)
+                offset = 0
+                chunks = 0
+                previous: bytes | None = None
+                while offset < len(image):
+                    if len(reply) == 1:
+                        raise ProtocolError(f"device rejected OTA with status {reply[0]}")
+                    if len(reply) < 3:
+                        raise ProtocolError("OTA transfer request is truncated")
+                    rr0 = reply[0]
+                    request_size = int.from_bytes(reply[1:3], "big")
+                    if not 1 <= request_size <= 512:
+                        raise ProtocolError(
+                            f"device requested invalid OTA chunk size {request_size}"
+                        )
+                    if rr0 == 2:
+                        if previous is None:
+                            raise ProtocolError("device requested an OTA retry before any chunk")
+                        payload = previous
+                    elif rr0 == 0:
+                        size = min(len(image) - offset, request_size)
+                        final = offset + size == len(image)
+                        payload = bytes((0, int(final))) + image[offset : offset + size]
+                        previous = payload
+                        offset += size
+                        chunks += 1
+                    else:
+                        raise ProtocolError(f"device returned unsupported OTA RR0 status {rr0}")
+                    packet = encode_frame(c.OTA_TRANSFER, payload, self._xor_payload)
+                    await self._write_fragmented_packet_locked(packet)
+                    if offset == len(image) and rr0 == 0:
+                        break
+                    reply = await self._wait_for_opcode_locked(c.OTA_TRANSFER, 20)
+            except asyncio.CancelledError:
+                await self._invalidate_locked()
+                raise
+            except Exception as exc:
+                disconnected = not self.connected
+                await self._invalidate_locked()
+                raise OutcomeUnknown(
+                    f"firmware transfer outcome is unknown: {self._error_detail(exc)}",
+                    connection_dropped=disconnected,
+                ) from exc
+            return {
+                "bytes_sent": len(image),
+                "chunks_sent": chunks,
+                "target_version": ".".join(map(str, version)),
+                "final_chunk_sent": True,
+                "completion_readback": False,
+                "note": (
+                    "Edifier's protocol provides no final image hash readback; live feature "
+                    "probing is required after the lighting MCU restarts."
+                ),
+            }
+
     async def prepare_large_write(self, minimum_size: int) -> int:
         if minimum_size < 1:
             raise ValueError("minimum_size must be positive")

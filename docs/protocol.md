@@ -71,6 +71,29 @@ tracked separately in `hardware-validation.md`:
 | Power off | — | `CE` | empty |
 | Factory reset | — | `07` | empty |
 
+## Optional display-patch extension
+
+This namespace is implemented by the project's optional QD35 1.3.0 lighting-MCU
+patch; it is not an Edifier stock command. It reuses the otherwise-invalid lighting
+effect zero inside the normal `6B` seven-byte payload:
+
+```text
+01 00 OP ARG VALUE 00 35
+```
+
+| OP | Meaning |
+|---:|---|
+| `D0` | Set six flag bits in `ARG` and manual brightness 0–7 in `VALUE` |
+| `D1` | Write raw grid byte index 0–7 in `ARG` with byte `VALUE` |
+| `D2` | Reset volatile state to stock-equivalent defaults |
+
+`D0` flag bits are display power, clock digits, EDIFIER logo, other symbols,
+follow ordinary lighting brightness, and raw-grid mode. `35` is a mandatory magic
+byte; invalid operations/indexes/brightness are rejected without partially changing
+state. The patched parser returns the ordinary `6B` response so the transport can
+distinguish an accepted command from stock firmware or a malformed request. There is
+no device-side query for the private SRAM state.
+
 The live D8 block decodes to rename mode 4 (35 UTF-8 bytes, no packaged write), EQ profile 12, UI skin 10, and support for name/address/firmware queries, disconnect, shutdown, reset, LDAC, input, volume, ambient lighting, audio-decoding status, and the hour/minute/second clock dialect. It does not advertise the no-audio auto-shutdown, shutdown timer, separate light-color setting, or lighting timer bits. Byte 19 bit 4 is version-sensitive: app 8.4.33 treats set as media-info support, while 8.5.5 treats clear as support; the live clear bit therefore does not mean metadata is absent, and a `50` event was observed. Capability parsing is length-aware, treats byte 4 as the 8.5.5 bit field, and preserves trailing or unknown data instead of assuming a fixed 22-byte format.
 
 QD35 group-1 color bytes are effect-specific. Ambient and magic-tides use first-byte

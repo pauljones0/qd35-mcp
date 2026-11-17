@@ -11,6 +11,30 @@ Validation date: 2026-11-17 UTC. Platform: Linux/BlueZ with Bleak. Target: Edifi
 
 The advertisement has no local name, which explains why a name-based initial scan appeared negative. A broad UUID/manufacturer scan ruled out that measurement error.
 
+## Optional display-patch OTA and controls
+
+The exact official 1.3.0 lighting-MCU image was patched deterministically from
+40,471 to 40,880 bytes and transferred over the app-confirmed ordinary OTA v2 path.
+The speaker requested 128-byte blocks, producing 320 acknowledged chunks. A short
+post-restart scan initially missed the advertisement; BlueZ still held the exact
+A400/manufacturer record, and a 30-second broad scan found it again at -61 dBm. This
+ruled out a failed boot rather than treating the first negative as dispositive.
+
+The first private effect-zero command then returned the ordinary `6B` response
+payload `01 07 01 00 00 14 FF`, which unmodified firmware cannot do. The live matrix
+exercised clock-only off, logo-only off, symbols-only off, whole-display off, manual
+brightness 0/3/7, raw writes for all eight display-grid indexes, raw all-segments,
+safe reset, and lighting-control-follow mode. Every command returned that valid
+response. The final state is all semantic groups visible, raw mode off, and display
+brightness following the ordinary right-side lighting control.
+
+With follow mode active, ordinary lighting brightness was changed to 0, then 100,
+then restored to the original 20; every `6A` readback matched. A final status read
+still returned firmware 1.3.0, volume 11/16, Bluetooth input, Extended lighting, and
+20% global lighting brightness. No audio-disconnect command was issued.
+The RTC was finally resynchronized at 02:04:20 CST (`America/Regina`) in 12-hour
+mode, returning `01`; all display groups/dial-follow were reasserted afterward.
+
 ## Read validation
 
 Successful queries: capability block, firmware, name, Classic address, volume, input, EQ preset, six DIY bands, lighting group/effects, LDAC, playback status, audio status, and custom-light status. An unsolicited media-info event (`50 00 00 00`) arrived after another query, proving that unrelated opcodes must be retained separately rather than discarded by request matching.

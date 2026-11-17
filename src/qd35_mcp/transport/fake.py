@@ -3,6 +3,13 @@ from __future__ import annotations
 from datetime import datetime
 
 from .. import constants as c
+from ..display import (
+    DISPLAY_DEFAULT_FLAGS,
+    DISPLAY_MAGIC,
+    DISPLAY_RESET,
+    DISPLAY_SET_STATE,
+    DISPLAY_WRITE_GRID,
+)
 from ..errors import DeviceNotFound, OutcomeUnknown
 from .base import DeviceCandidate, DeviceEvent, Transport
 
@@ -61,6 +68,9 @@ class FakeTransport(Transport):
         self.light_group = 1
         self.light_selected = 4
         self.light_records = self._default_light_records()
+        self.display_flags = DISPLAY_DEFAULT_FLAGS
+        self.display_brightness = 7
+        self.display_grid = [0xFF] * 8
         self.bands = self._default_bands()
         self._events: list[DeviceEvent] = []
         self._event_sequence = 0
@@ -73,6 +83,8 @@ class FakeTransport(Transport):
             protocol_version=2,
             encryption_selector=0,
         )
+        self.last_ota_image: bytes | None = None
+        self.last_ota_version: tuple[int, int, int] | None = None
 
     @property
     def connected(self) -> bool:
@@ -102,6 +114,23 @@ class FakeTransport(Transport):
         if not self._connected:
             await self.connect()
         return 509
+
+    async def ota_update(
+        self,
+        image: bytes,
+        version: tuple[int, int, int],
+    ) -> dict[str, object]:
+        if not self._connected:
+            await self.connect()
+        self.last_ota_image = image
+        self.last_ota_version = version
+        return {
+            "bytes_sent": len(image),
+            "chunks_sent": (len(image) + 511) // 512,
+            "target_version": ".".join(map(str, version)),
+            "final_chunk_sent": True,
+            "completion_readback": False,
+        }
 
     def _emit(self, opcode: int, payload: bytes) -> None:
         self._event_sequence += 1
@@ -197,6 +226,17 @@ class FakeTransport(Transport):
             self.light_timer = (payload[0], payload[1])
             return bytes(self.light_timer)
         if opcode == c.SET_LIGHT:
+            if len(payload) == 7 and payload[1] == 0 and payload[6] == DISPLAY_MAGIC:
+                if payload[2] == DISPLAY_SET_STATE:
+                    self.display_flags = payload[3] & 0x3F
+                    self.display_brightness = payload[4]
+                elif payload[2] == DISPLAY_WRITE_GRID:
+                    self.display_grid[payload[3]] = payload[4]
+                elif payload[2] == DISPLAY_RESET:
+                    self.display_flags = DISPLAY_DEFAULT_FLAGS
+                    self.display_brightness = 7
+                    self.display_grid = [0xFF] * 8
+                return payload
             self.light_group, self.light_selected = payload[:2]
             self.light_records[self.light_selected] = list(payload[1:])
             for record in self.light_records.values():

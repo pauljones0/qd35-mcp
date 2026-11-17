@@ -41,6 +41,8 @@ SYNC_CLOCK = 0x77
 POWER_OFF = 0xCE
 DISCONNECT_AUDIO = 0xCD
 FACTORY_RESET = 0x07
+OTA_READY = 0x10
+OTA_TRANSFER = 0x11
 
 MUTATING_OPCODES = frozenset(
     {
@@ -62,6 +64,8 @@ MUTATING_OPCODES = frozenset(
         POWER_OFF,
         DISCONNECT_AUDIO,
         FACTORY_RESET,
+        OTA_READY,
+        OTA_TRANSFER,
     }
 )
 

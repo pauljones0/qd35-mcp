@@ -20,6 +20,19 @@ from .animations import (
 )
 from .config import Config
 from .custom_lights import CustomLightAsset, fetch_custom_light_asset, list_custom_lights
+from .display import (
+    DISPLAY_CLOCK,
+    DISPLAY_DEFAULT_FLAGS,
+    DISPLAY_FOLLOW_DIAL,
+    DISPLAY_LOGO,
+    DISPLAY_POWER,
+    DISPLAY_RAW_MODE,
+    DISPLAY_SYMBOLS,
+    describe_flags,
+    grid_payload,
+    reset_payload,
+    state_payload,
+)
 from .errors import (
     DangerousWritesDisabled,
     OutcomeUnknown,
@@ -27,6 +40,18 @@ from .errors import (
     QD35Error,
     RequestTimeout,
     WritesDisabled,
+)
+from .firmware_patch import (
+    PATCH_ADDRESS,
+    PATCH_CODE,
+    PATCH_LIMIT,
+    PATCHED_SHA256,
+    STOCK_SHA256,
+    STOCK_SIZE,
+    STOCK_URL,
+    download_stock_image,
+    patch_image,
+    sha256,
 )
 from .protocol import (
     parse_address,
@@ -93,6 +118,11 @@ class QD35Service:
             else default_timezone_state_path()
         )
         self._timezone = resolve_timezone(config.timezone, self._timezone_state_path)
+        self._display_flags = DISPLAY_DEFAULT_FLAGS
+        self._display_brightness = 7
+        self._display_state_known = False
+        self._display_grid: list[int | None] = [None] * 8
+        self._display_session_identity: tuple[str, int] | None = None
 
     async def discover(self, timeout: float | None = None) -> dict[str, object]:
         timeout_value = self.config.scan_timeout if timeout is None else timeout
@@ -107,6 +137,11 @@ class QD35Service:
         result = device.to_dict()
         if self._verified_identity != self.transport.connection_identity:
             self._verified_identity = None
+        if (
+            self._display_session_identity is not None
+            and self._display_session_identity != self.transport.connection_identity
+        ):
+            self._display_state_known = False
         self._connected_device = result
         return result
 
@@ -205,6 +240,25 @@ class QD35Service:
                 "This operation is disabled; set QD35_ENABLE_DANGEROUS=1 and restart the server"
             )
 
+    def _display_write_allowed(self, dangerous: bool = False) -> None:
+        self._write_allowed(dangerous=dangerous)
+        if not self.config.custom_display_firmware:
+            raise ProtocolError(
+                "Display controls require the exact qd35-mcp MCU patch and "
+                "QD35_CUSTOM_DISPLAY_FIRMWARE=1; stock firmware does not implement them"
+            )
+
+    def _firmware_install_allowed(self, require_patch_enabled: bool) -> None:
+        self._write_allowed(dangerous=True)
+        if require_patch_enabled and not self.config.custom_display_firmware:
+            raise ProtocolError(
+                "Set QD35_CUSTOM_DISPLAY_FIRMWARE=1 to install the display patch"
+            )
+        if not self.config.firmware_install_enabled:
+            raise ProtocolError(
+                "Firmware installation is disabled; set QD35_ENABLE_FIRMWARE_INSTALL=1"
+            )
+
     async def status(self) -> dict[str, object]:
         async with self._mutation_lock:
             self._transaction_active = True
@@ -295,33 +349,244 @@ class QD35Service:
                 "Bluetooth audio disconnect",
                 "power off",
                 "factory reset",
+                *(
+                    [
+                        "independent display power, clock, logo and symbols",
+                        "display brightness 0-7 or follow the right-side lighting dial",
+                        "raw access to all eight CMS1640 display-grid bytes",
+                    ]
+                    if self.config.custom_display_firmware
+                    else []
+                ),
+                *(
+                    [
+                        "install the bundled display patch from the exact pinned Edifier image",
+                        "restore the exact pinned stock firmware image",
+                    ]
+                    if self.config.firmware_install_enabled
+                    else []
+                ),
             ],
             "not_exposed": {
-                "firmware_update": (
-                    "The app lookup and single-image OTA framing are recovered, but no newer "
-                    "QD35 image is offered and recovery/power-loss behavior is unverified"
+                **(
+                    {}
+                    if self.config.firmware_install_enabled
+                    else {
+                        "firmware_install": (
+                            "The fixed display-patch and stock-restore MCP tools require "
+                            "QD35_ENABLE_FIRMWARE_INSTALL=1 plus both write gates"
+                        )
+                    }
                 ),
+                "firmware_update": "No newer official QD35 image is currently offered",
                 "built_in_bgm": "The 32 audio files are app-local media, not speaker BLE commands",
                 "remote_power_on": "Not supported by the official app",
-                "clock_display_off": (
-                    "Firmware can blank the digit grids internally, but the stock Bluetooth "
-                    "protocol exposes only time sync and 12/24-hour format"
-                ),
-                "logo_control": (
-                    "The EDIFIER wordmark has an independent display-grid bit internally, but "
-                    "stock firmware forces it on and exposes no Bluetooth command for it"
-                ),
-                "display_brightness": (
-                    "Clock/logo brightness is hard-coded to the CMS1640 maximum; only speaker "
-                    "standby sends the global display-off command"
+                **(
+                    {}
+                    if self.config.custom_display_firmware
+                    else {
+                        "custom_display": (
+                            "Stock firmware lacks independent clock/logo controls. Build and "
+                            "install the exact-hash MCU patch, then set "
+                            "QD35_CUSTOM_DISPLAY_FIRMWARE=1."
+                        )
+                    }
                 ),
                 "raw_gatt": "Excluded to keep agents inside the QD35 semantic API",
             },
             "write_policy": {
                 "writes_enabled": self.config.writes_enabled,
                 "dangerous_writes_enabled": self.config.dangerous_writes_enabled,
+                "custom_display_firmware": self.config.custom_display_firmware,
+                "firmware_install_enabled": self.config.firmware_install_enabled,
             },
         }
+
+    async def display_status(self) -> dict[str, object]:
+        """Return the last acknowledged patch state; the stock protocol has no readback."""
+        return {
+            "available": self.config.custom_display_firmware,
+            "state_known_this_process": self._display_state_known,
+            "state": describe_flags(self._display_flags, self._display_brightness),
+            "grid_bytes": self._display_grid,
+            "device_readback": False,
+            "volatile": True,
+            "note": (
+                "The patch resets to display on, clock/logo/symbols on, brightness 7 after a "
+                "speaker power cycle. Values here are locally retained acknowledgements."
+            ),
+        }
+
+    async def display_firmware_info(self) -> dict[str, object]:
+        """Describe the bundled original patch and its fixed install contract."""
+        return {
+            "patch_bundled": True,
+            "patch_bytes": len(PATCH_CODE),
+            "patch_address": f"0x{PATCH_ADDRESS:08X}",
+            "animation_storage_starts": f"0x{PATCH_LIMIT:08X}",
+            "official_source_url": STOCK_URL,
+            "official_source_size": STOCK_SIZE,
+            "official_source_sha256": STOCK_SHA256,
+            "patched_image_sha256": PATCHED_SHA256,
+            "custom_display_firmware_enabled": self.config.custom_display_firmware,
+            "firmware_install_enabled": self.config.firmware_install_enabled,
+            "accepts_arbitrary_images": False,
+            "install_confirmation": "INSTALL DISPLAY PATCH",
+            "restore_confirmation": "RESTORE STOCK FIRMWARE",
+        }
+
+    @serialized_mutation
+    async def set_display(
+        self,
+        power: bool | None = None,
+        clock: bool | None = None,
+        logo: bool | None = None,
+        symbols: bool | None = None,
+        brightness: int | None = None,
+        follow_lighting_dial: bool | None = None,
+        raw_mode: bool | None = None,
+    ) -> dict[str, object]:
+        """Set independent display masks implemented by the optional MCU patch."""
+        self._display_write_allowed()
+        if brightness is not None and not 0 <= brightness <= 7:
+            raise ValueError("brightness must be from 0 to 7")
+        updates = {
+            DISPLAY_POWER: power,
+            DISPLAY_CLOCK: clock,
+            DISPLAY_LOGO: logo,
+            DISPLAY_SYMBOLS: symbols,
+            DISPLAY_FOLLOW_DIAL: follow_lighting_dial,
+            DISPLAY_RAW_MODE: raw_mode,
+        }
+        if all(value is None for value in updates.values()) and brightness is None:
+            raise ValueError("provide at least one display setting to change")
+        flags = self._display_flags
+        for bit, value in updates.items():
+            if value is True:
+                flags |= bit
+            elif value is False:
+                flags &= ~bit
+        level = self._display_brightness if brightness is None else brightness
+        response = await self._request(c.SET_LIGHT, state_payload(flags, level))
+        self._display_flags = flags
+        self._display_brightness = level
+        self._display_state_known = True
+        self._display_session_identity = self.transport.connection_identity
+        return {
+            "acknowledged": True,
+            "applied": None,
+            "state": describe_flags(flags, level),
+            "acknowledgement_hex": response.hex(),
+            "device_readback": False,
+        }
+
+    @serialized_mutation
+    async def write_display_grid_byte(self, index: int, value: int) -> dict[str, object]:
+        """Write one raw CMS1640 grid byte; raw mode is controlled separately."""
+        self._display_write_allowed(dangerous=True)
+        response = await self._request(c.SET_LIGHT, grid_payload(index, value))
+        self._display_grid[index] = value
+        self._display_session_identity = self.transport.connection_identity
+        return {
+            "acknowledged": True,
+            "applied": None,
+            "index": index,
+            "value": value,
+            "value_hex": f"0x{value:02X}",
+            "raw_mode": bool(self._display_flags & DISPLAY_RAW_MODE),
+            "acknowledgement_hex": response.hex(),
+            "device_readback": False,
+        }
+
+    @serialized_mutation
+    async def reset_display(self) -> dict[str, object]:
+        """Restore the patch's safe stock-equivalent volatile defaults."""
+        self._display_write_allowed()
+        response = await self._request(c.SET_LIGHT, reset_payload())
+        self._display_flags = DISPLAY_DEFAULT_FLAGS
+        self._display_brightness = 7
+        self._display_state_known = True
+        self._display_grid = [None] * 8
+        self._display_session_identity = self.transport.connection_identity
+        return {
+            "acknowledged": True,
+            "applied": None,
+            "state": describe_flags(self._display_flags, self._display_brightness),
+            "acknowledgement_hex": response.hex(),
+            "device_readback": False,
+        }
+
+    @serialized_mutation
+    async def install_display_firmware(self, stock_image: bytes) -> dict[str, object]:
+        """Install the exact-hash display patch; deliberately not registered as an MCP tool."""
+        self._firmware_install_allowed(require_patch_enabled=True)
+        if not self.config.device:
+            raise ProtocolError(
+                "Firmware installation requires an explicit QD35_DEVICE address"
+            )
+        patched = patch_image(stock_image)
+        await self.ensure_connected()
+        verified = await self._verify_qd35_target()
+        identity = self.transport.connection_identity
+        if identity is None or identity[0].lower() != self.config.device.lower():
+            raise ProtocolError("connected firmware target does not match QD35_DEVICE")
+        current = parse_firmware(await self._request(c.QUERY_FIRMWARE))
+        if current != "1.3.0":
+            raise ProtocolError(
+                f"display patch supports QD35 firmware 1.3.0, found {current}"
+            )
+        self._transaction_mutated = True
+        transfer = await self.transport.ota_update(patched, (1, 3, 0))
+        return {
+            "target": verified,
+            "stock_sha256": STOCK_SHA256,
+            "patched_sha256": PATCHED_SHA256,
+            "transfer": transfer,
+            "verification_required": True,
+            "next_step": (
+                "Wait for the lighting MCU to restart, reconnect, then exercise "
+                "qd35_set_display. The OTA protocol cannot read back an installed image hash."
+            ),
+        }
+
+    @serialized_mutation
+    async def restore_stock_firmware(self, stock_image: bytes) -> dict[str, object]:
+        """Restore the exact official image; deliberately not registered as an MCP tool."""
+        self._firmware_install_allowed(require_patch_enabled=False)
+        if len(stock_image) != STOCK_SIZE or sha256(stock_image) != STOCK_SHA256:
+            raise ValueError("restore requires the exact supported official QD35 1.3.0 image")
+        if not self.config.device:
+            raise ProtocolError("Firmware restoration requires an explicit QD35_DEVICE address")
+        await self.ensure_connected()
+        verified = await self._verify_qd35_target()
+        identity = self.transport.connection_identity
+        if identity is None or identity[0].lower() != self.config.device.lower():
+            raise ProtocolError("connected firmware target does not match QD35_DEVICE")
+        current = parse_firmware(await self._request(c.QUERY_FIRMWARE))
+        if current != "1.3.0":
+            raise ProtocolError(
+                f"stock restore supports QD35 firmware lineage 1.3.0, found {current}"
+            )
+        self._transaction_mutated = True
+        transfer = await self.transport.ota_update(stock_image, (1, 3, 0))
+        return {
+            "target": verified,
+            "restored_sha256": STOCK_SHA256,
+            "transfer": transfer,
+            "verification_required": True,
+        }
+
+    async def install_display_firmware_from_edifier(self) -> dict[str, object]:
+        """Fetch the one pinned official source image and install the bundled patch."""
+        self._firmware_install_allowed(require_patch_enabled=True)
+        stock = await download_stock_image()
+        return await self.install_display_firmware(stock)
+
+    async def restore_stock_firmware_from_edifier(self) -> dict[str, object]:
+        """Fetch and restore the one pinned official source image."""
+        self._firmware_install_allowed(require_patch_enabled=False)
+        stock = await download_stock_image()
+        return await self.restore_stock_firmware(stock)
 
     async def events(self, since_sequence: int = 0, limit: int = 100) -> dict[str, object]:
         result = await self.transport.events(since_sequence, limit)

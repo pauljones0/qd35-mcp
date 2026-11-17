@@ -62,6 +62,13 @@ async def test_real_stdio_server_contract() -> None:
             assert "qd35_set_timezone" in names
             assert "qd35_get_events" in names
             assert "qd35_factory_reset" in names
+            assert "qd35_get_display_status" in names
+            assert "qd35_get_display_firmware_info" in names
+            assert "qd35_set_display" in names
+            assert "qd35_write_display_grid_byte" in names
+            assert "qd35_reset_display" in names
+            assert "qd35_install_display_firmware" in names
+            assert "qd35_restore_stock_firmware" in names
 
             by_name = {tool.name: tool for tool in tools.tools}
             assert by_name["qd35_set_input"].input_schema["properties"]["source"]["enum"] == [
@@ -86,6 +93,9 @@ async def test_real_stdio_server_contract() -> None:
             ] == ["light", "deep", "off", "on"]
             assert by_name["qd35_sync_clock"].annotations.idempotent_hint is False
             assert "bedtime" in by_name["qd35_create_sunrise_alarm"].input_schema["properties"]
+            assert by_name["qd35_install_display_firmware"].input_schema["properties"][
+                "confirmation"
+            ]["const"] == "INSTALL DISPLAY PATCH"
 
             status = await session.call_tool("qd35_get_status")
             assert status.is_error is False
@@ -112,6 +122,12 @@ async def test_real_stdio_server_contract() -> None:
                     "qd35_set_light",
                     {"effect": "static", "rgb": "#123456", "brightness": 40},
                 ),
+                (
+                    "qd35_set_display",
+                    {"clock": False, "logo": True, "brightness": 3},
+                ),
+                ("qd35_write_display_grid_byte", {"index": 0, "value": 165}),
+                ("qd35_reset_display", {}),
                 (
                     "qd35_apply_diagnostic_light",
                     {"pattern": "rgb_bars", "brightness": 10},

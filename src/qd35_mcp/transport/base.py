@@ -72,3 +72,11 @@ class Transport(ABC):
     @abstractmethod
     async def prepare_large_write(self, minimum_size: int) -> int:
         """Establish and return a validated one-write ATT payload capacity."""
+
+    @abstractmethod
+    async def ota_update(
+        self,
+        image: bytes,
+        version: tuple[int, int, int],
+    ) -> dict[str, object]:
+        """Transfer one exact, prevalidated firmware image using Edifier OTA v2."""

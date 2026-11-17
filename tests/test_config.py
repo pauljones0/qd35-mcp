@@ -38,6 +38,23 @@ def test_environment_identifiers_are_trimmed(monkeypatch: pytest.MonkeyPatch) ->
     config = Config.from_env()
     assert config.device == "AA:BB:CC:DD:EE:FF"
     assert config.adapter == "hci1"
+    assert config.custom_display_firmware is True
+
+
+def test_display_firmware_gate_defaults_off_on_hardware(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("QD35_TRANSPORT", "bleak")
+    assert Config.from_env().custom_display_firmware is False
+    monkeypatch.setenv("QD35_CUSTOM_DISPLAY_FIRMWARE", "1")
+    assert Config.from_env().custom_display_firmware is True
+
+
+def test_firmware_install_gate_is_always_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("QD35_TRANSPORT", "fake")
+    assert Config.from_env().firmware_install_enabled is False
+    monkeypatch.setenv("QD35_ENABLE_FIRMWARE_INSTALL", "1")
+    assert Config.from_env().firmware_install_enabled is True
 
 
 def test_invalid_boolean_environment_value_is_not_silently_disabled(
