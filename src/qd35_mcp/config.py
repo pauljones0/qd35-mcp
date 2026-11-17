@@ -26,6 +26,11 @@ class Config:
     dangerous_writes_enabled: bool
     request_timeout: float
     scan_timeout: float
+    alarm_state_path: str | None = None
+    alarm_media_dir: str | None = None
+    alarm_unit_dir: str | None = None
+    alarm_remote_audio: bool = False
+    alarm_allowed_hosts: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.transport not in {"bleak", "fake"}:
@@ -48,4 +53,13 @@ class Config:
             dangerous_writes_enabled=_enabled("QD35_ENABLE_DANGEROUS"),
             request_timeout=float(os.getenv("QD35_REQUEST_TIMEOUT", "4")),
             scan_timeout=float(os.getenv("QD35_SCAN_TIMEOUT", "8")),
+            alarm_state_path=(os.getenv("QD35_ALARM_STATE_PATH") or "").strip() or None,
+            alarm_media_dir=(os.getenv("QD35_ALARM_MEDIA_DIR") or "").strip() or None,
+            alarm_unit_dir=(os.getenv("QD35_ALARM_UNIT_DIR") or "").strip() or None,
+            alarm_remote_audio=_enabled("QD35_ALARM_ALLOW_REMOTE_AUDIO"),
+            alarm_allowed_hosts=tuple(
+                host.strip().lower()
+                for host in os.getenv("QD35_ALARM_ALLOWED_HOSTS", "").split(",")
+                if host.strip()
+            ),
         )

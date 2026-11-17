@@ -1,0 +1,177 @@
+from __future__ import annotations
+
+from dataclasses import replace
+
+import pytest
+
+from qd35_mcp.alarms import (
+    AlarmManager,
+    AlarmStore,
+    SunriseAlarm,
+    alarm_start_schedule,
+    ramp_value,
+    systemd_calendar,
+    validate_audio_source,
+)
+from qd35_mcp.config import Config
+from qd35_mcp.service import QD35Service
+from qd35_mcp.transport.fake import FakeTransport
+
+
+def fake_config(**changes: object) -> Config:
+    config = Config(
+        device="fake",
+        adapter=None,
+        transport="fake",
+        writes_enabled=True,
+        dangerous_writes_enabled=False,
+        request_timeout=1,
+        scan_timeout=1,
+    )
+    return replace(config, **changes)
+
+
+def sample_alarm(**changes: object) -> SunriseAlarm:
+    values: dict[str, object] = {
+        "alarm_id": "weekday-wake",
+        "name": "Weekday wake",
+        "wake_time": "07:00",
+        "timezone": "America/Regina",
+        "weekdays": ("mon", "tue", "wed", "thu", "fri"),
+        "sunrise_minutes": 30,
+        "start_brightness": 1,
+        "end_brightness": 100,
+        "light_rgb": "#FF6A20",
+        "clock_format": "12h",
+        "audio_source": None,
+        "audio_fade_minutes": 10,
+        "target_speaker_volume": 8,
+        "ble_device": "FA:CE:D3:50:00:01",
+        "classic_device": "AA:BB:CC:DD:EE:FF",
+        "enabled": True,
+        "created_at": "2026-11-17T00:00:00+00:00",
+    }
+    values.update(changes)
+    return SunriseAlarm(**values)  # type: ignore[arg-type]
+
+
+def test_schedule_starts_before_wake_in_named_timezone() -> None:
+    alarm = sample_alarm()
+    assert alarm_start_schedule(alarm) == (
+        "06:30",
+        ("mon", "tue", "wed", "thu", "fri"),
+    )
+    assert systemd_calendar(alarm) == ("Mon,Tue,Wed,Thu,Fri *-*-* 06:30:00 America/Regina")
+
+
+def test_schedule_moves_to_previous_day_across_midnight() -> None:
+    alarm = sample_alarm(
+        wake_time="00:15",
+        sunrise_minutes=30,
+        weekdays=("mon", "sun"),
+    )
+    assert alarm_start_schedule(alarm) == ("23:45", ("sat", "sun"))
+
+
+def test_ramp_is_bounded_and_monotonic() -> None:
+    assert ramp_value(1, 100, -1) == 1
+    assert ramp_value(1, 100, 0.5) == 50
+    assert ramp_value(1, 100, 2) == 100
+
+
+def test_remote_audio_is_operator_gated(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValueError, match="disabled"):
+        validate_audio_source("https://radio.example/stream", fake_config())
+
+    monkeypatch.setattr(
+        "qd35_mcp.alarms.socket.getaddrinfo",
+        lambda *_args: [(2, 1, 6, "", ("1.1.1.1", 443))],
+    )
+    config = fake_config(
+        alarm_remote_audio=True,
+        alarm_allowed_hosts=("radio.example",),
+    )
+    assert validate_audio_source("https://radio.example/stream", config) == (
+        "https://radio.example/stream"
+    )
+
+
+class FakeTimers:
+    def __init__(self) -> None:
+        self.installed: list[SunriseAlarm] = []
+        self.removed: list[str] = []
+        self.started: list[str] = []
+        self.stopped: list[str] = []
+        self.keepalive_installed: list[str] = []
+        self.keepalive_removed = 0
+
+    def install(self, alarm: SunriseAlarm) -> None:
+        self.installed.append(alarm)
+
+    def remove(self, alarm_id: str) -> None:
+        self.removed.append(alarm_id)
+
+    def start_now(self, alarm_id: str) -> None:
+        self.started.append(alarm_id)
+
+    def stop(self, alarm_id: str) -> None:
+        self.stopped.append(alarm_id)
+
+    def state(self, _alarm_id: str) -> dict[str, object]:
+        return {"timer_enabled": True, "service_active": False}
+
+    def keepalive_state(self) -> dict[str, object]:
+        return {
+            "enabled": bool(self.keepalive_installed) and self.keepalive_removed == 0,
+            "active": bool(self.keepalive_installed) and self.keepalive_removed == 0,
+        }
+
+    def install_keepalive(self, classic_device: str) -> None:
+        self.keepalive_installed.append(classic_device)
+
+    def remove_keepalive(self) -> None:
+        self.keepalive_removed += 1
+
+
+async def test_manager_persists_and_controls_alarm(tmp_path) -> None:
+    config = fake_config(alarm_state_path=str(tmp_path / "alarms.json"))
+    store = AlarmStore(tmp_path / "alarms.json")
+    timers = FakeTimers()
+    manager = AlarmManager(
+        QD35Service(FakeTransport(), config),
+        config,
+        store=store,
+        timers=timers,  # type: ignore[arg-type]
+    )
+    created = await manager.create(
+        "Weekday Wake",
+        "07:00",
+        "America/Regina",
+        ["mon", "tue", "wed", "thu", "fri"],
+        30,
+        1,
+        100,
+        "#FF6A20",
+        "12h",
+        None,
+        10,
+        8,
+    )
+    assert created["alarm_id"] == "weekday-wake"
+    assert created["installed"] is True
+    assert store.path.stat().st_mode & 0o777 == 0o600
+    assert timers.installed[0].clock_format == "12h"
+
+    listed = await manager.list()
+    assert listed["count"] == 1
+    assert listed["alarms"][0]["timer_enabled"] is True
+    keepalive = await manager.set_audio_keepalive(True)
+    assert keepalive["active"] is True
+    assert keepalive["speaker_disconnect_command_sent"] is False
+    assert (await manager.start_now("weekday-wake"))["started"] is True
+    assert (await manager.stop("weekday-wake"))["bluetooth_disconnected"] is False
+    assert (await manager.delete("weekday-wake"))["deleted"] is True
+    assert timers.started == ["weekday-wake"]
+    assert timers.stopped == ["weekday-wake"]
+    assert timers.removed == ["weekday-wake"]
+    assert timers.keepalive_removed == 1

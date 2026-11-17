@@ -8,6 +8,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from .alarms import AlarmManager
 from .config import Config
 from .errors import QD35Error
 from .service import QD35Service
@@ -25,8 +26,12 @@ def create_service(config: Config | None = None) -> QD35Service:
     return QD35Service(transport, config)
 
 
-def create_server(service: QD35Service | None = None) -> MCPServer:
+def create_server(
+    service: QD35Service | None = None,
+    alarm_manager: AlarmManager | None = None,
+) -> MCPServer:
     service = service or create_service()
+    alarm_manager = alarm_manager or AlarmManager(service, service.config)
 
     @asynccontextmanager
     async def lifespan(_server: MCPServer):
@@ -80,7 +85,7 @@ def create_server(service: QD35Service | None = None) -> MCPServer:
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
     async def qd35_list_custom_lights() -> dict[str, object]:
-        """List the official firmware-1.3.0 custom animations and palette keys."""
+        """List official animations, diagnostic patterns, geometry, and palette keys."""
         return await call(service.custom_light_catalog)
 
     @server.tool(
@@ -190,6 +195,22 @@ def create_server(service: QD35Service | None = None) -> MCPServer:
         return await call(service.apply_custom_light, preset, palette_key, activate)
 
     @server.tool(
+        annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
+    )
+    async def qd35_apply_diagnostic_light(
+        pattern: Literal[
+            "pixel_chase",
+            "rgb_bars",
+            "timing_sweep",
+            "fourth_byte_sweep",
+        ],
+        brightness: Annotated[int, Field(ge=1, le=25)] = 10,
+        activate: bool = True,
+    ) -> dict[str, object]:
+        """Upload a bounded diagnostic animation for video-assisted protocol calibration."""
+        return await call(service.apply_custom_light, pattern, None, activate, brightness)
+
+    @server.tool(
         annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False, openWorldHint=False)
     )
     async def qd35_media_control(
@@ -206,6 +227,73 @@ def create_server(service: QD35Service | None = None) -> MCPServer:
     ) -> dict[str, object]:
         """Set the speaker clock; firmware acknowledges success but offers no clock readback."""
         return await call(service.sync_clock, clock_format)
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
+    async def qd35_list_alarms() -> dict[str, object]:
+        """List persistent sunrise alarms and their systemd timer/runtime state."""
+        return await call(alarm_manager.list)
+
+    @server.tool(
+        annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
+    )
+    async def qd35_set_alarm_audio_keepalive(enabled: bool) -> dict[str, object]:
+        """Keep the paired Classic audio endpoint connected/reconnected overnight."""
+        return await call(alarm_manager.set_audio_keepalive, enabled)
+
+    @server.tool(
+        annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=True)
+    )
+    async def qd35_create_sunrise_alarm(
+        name: Annotated[str, Field(min_length=1, max_length=80)],
+        wake_time: Annotated[str, Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")],
+        weekdays: list[Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]],
+        timezone: str = "America/Regina",
+        sunrise_minutes: Annotated[int, Field(ge=1, le=180)] = 30,
+        start_brightness: Annotated[int, Field(ge=0, le=99)] = 1,
+        end_brightness: Annotated[int, Field(ge=1, le=100)] = 100,
+        light_rgb: Annotated[str, Field(pattern=r"^#[0-9A-Fa-f]{6}$")] = "#FF6A20",
+        clock_format: Literal["preserve", "12h", "24h"] = "12h",
+        audio_source: str | None = None,
+        audio_fade_minutes: Annotated[int, Field(ge=0, le=180)] = 10,
+        target_speaker_volume: Annotated[int, Field(ge=0, le=16)] = 8,
+    ) -> dict[str, object]:
+        """Persist a sunrise alarm and install a reboot-persistent user timer."""
+        return await call(
+            alarm_manager.create,
+            name,
+            wake_time,
+            timezone,
+            weekdays,
+            sunrise_minutes,
+            start_brightness,
+            end_brightness,
+            light_rgb,
+            clock_format,
+            audio_source,
+            audio_fade_minutes,
+            target_speaker_volume,
+        )
+
+    @server.tool(
+        annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False, openWorldHint=False)
+    )
+    async def qd35_run_alarm_now(alarm_id: str) -> dict[str, object]:
+        """Start one installed alarm immediately through its systemd user service."""
+        return await call(alarm_manager.start_now, alarm_id)
+
+    @server.tool(
+        annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
+    )
+    async def qd35_stop_alarm(alarm_id: str) -> dict[str, object]:
+        """Stop an active alarm without issuing a Bluetooth disconnect command."""
+        return await call(alarm_manager.stop, alarm_id)
+
+    @server.tool(
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
+    )
+    async def qd35_delete_alarm(alarm_id: str) -> dict[str, object]:
+        """Delete one alarm and remove its systemd user timer/service files."""
+        return await call(alarm_manager.delete, alarm_id)
 
     @server.tool(
         annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)

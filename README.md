@@ -17,11 +17,13 @@ The protocol is independently implemented from observed behavior and Edifier Con
 - Adjust or reset the six DIY bands: 62 Hz, 250 Hz, 1 kHz, 4 kHz, 8 kHz, and 16 kHz
 - Select or reset lighting effects; use RGB on effects 3–6, named color modes on effects 1, 2, and 7, and change global brightness, supported speed, or on/off state
 - Install all four official Extended animations (Gradient, Water-drop, Spiral, and Multicolored), with palette support where the app provides it
+- Upload bounded pixel-order, RGB, timing, and fourth-component diagnostic animations for video-assisted reverse engineering
 - Retain and expose unsolicited playback/title/artist events instead of discarding them
 - Play/pause and skip the active Bluetooth player
 - Sync the clock and choose 12/24-hour display
 - Select LDAC off, 48/44.1 kHz, or 96 kHz
 - Rename, disconnect Bluetooth audio, power off, or factory-reset the speaker
+- Install persistent sunrise alarms that ramp light and speaker volume, play local audio or public internet radio, and keep paired Classic audio connected overnight
 
 The app's 32 built-in BGM tracks are audio files played by the phone, not stored speaker commands, so they are not redistributed. Firmware update is intentionally excluded from the agent interface.
 
@@ -87,6 +89,7 @@ Do not copy that example address unless it is your speaker.
 | `qd35_get_capabilities` | Show supported, excluded, and gated operations |
 | `qd35_get_events` | Read retained notifications, including playback/title/artist events and raw unknown events |
 | `qd35_list_custom_lights` | List official QD35 Extended animations and palettes |
+| `qd35_apply_diagnostic_light` | Upload one low-brightness protocol-calibration animation |
 | `qd35_set_volume` | Set and read back volume |
 | `qd35_set_input` | Select `bluetooth`, `aux`, or `usb` |
 | `qd35_set_eq_preset` | Select `music`, `game`, `movie`, or `diy` |
@@ -98,6 +101,12 @@ Do not copy that example address unless it is your speaker.
 | `qd35_apply_custom_light` | Download, verify, transfer, read back, and optionally activate an official Extended animation |
 | `qd35_media_control` | `play`, `pause`, `next`, or `previous` |
 | `qd35_sync_clock` | Sync time and select `preserve`, `12h`, or `24h` |
+| `qd35_list_alarms` | List persistent sunrise alarms and timer/runtime state |
+| `qd35_create_sunrise_alarm` | Install a timezone-aware, reboot-persistent light/audio alarm |
+| `qd35_run_alarm_now` | Start one installed alarm immediately |
+| `qd35_stop_alarm` | Stop current light/audio playback without disconnecting Bluetooth |
+| `qd35_delete_alarm` | Remove an alarm and its user timer/service |
+| `qd35_set_alarm_audio_keepalive` | Enable or disable overnight Classic-audio reconnection |
 | `qd35_set_ldac` | Select `off`, `48khz`, or `96khz`; a change restarts Bluetooth |
 | `qd35_rename_device` | Rename using the live D8-advertised UTF-8 limit (35 bytes on tested firmware) |
 | `qd35_disconnect_audio` | Drop the Classic Bluetooth audio link |
@@ -106,7 +115,7 @@ Do not copy that example address unless it is your speaker.
 
 Lighting controls are effect-specific: `ambient` and `magic_tides` accept `color_mode` values `light`/`deep`; `shooting_star`, `breathing`, `tempo_emo`, and `static` accept `rgb`; `extended` accepts `off`/`on`. Brightness is global on firmware 1.3.0. Speed is available only when status reports a numeric speed.
 
-Custom-light downloads are restricted to fixed Edifier HTTPS URLs, capped in size, and checked against pinned SHA-256 hashes and the recovered 150-byte record format before Bluetooth transfer. Firmware, target identity, and one-write ATT capacity are verified before `79`; transfer limits come from the speaker, every chunk is acknowledged with bounded retries, failure triggers a best-effort abort, and completion is checked with `78` identity readback. Firmware does not return the installed binary, so the result states that verification limit explicitly. This is the only tool that needs internet access.
+Custom-light downloads are restricted to fixed Edifier HTTPS URLs, capped in size, and checked against pinned SHA-256 hashes and the recovered 150-byte record format before Bluetooth transfer. Firmware, target identity, and one-write ATT capacity are verified before `79`; transfer limits come from the speaker, every chunk is acknowledged with bounded retries, failure triggers a best-effort abort, and completion is checked with `78` identity readback. Firmware does not return the installed binary, so the result states that verification limit explicitly. Diagnostic patterns are generated locally from fixed, validated geometry and activate at no more than 25% brightness.
 
 Setting tools read state back when the protocol allows it. Media `C2` is one-way, but the tool also queries `C3` playing state; that can verify play/pause, not track changes. Clock sync reports a device success acknowledgement but `applied` remains unknown because the protocol has no clock readback. A timeout, malformed confirmation, or connection loss after any write is reported as an uncertain outcome. Firmware 1.3.0 restarts Bluetooth after an LDAC change and may invalidate the tested host bond, so re-pair Classic audio and call `qd35_get_status` to verify the requested mode. The tool avoids the restart entirely when the requested mode is already active.
 
@@ -121,6 +130,11 @@ Setting tools read state back when the protocol allows it. Media `C2` is one-way
 | `QD35_ENABLE_DANGEROUS` | `0` | Enable reset, power-off, and audio disconnect |
 | `QD35_SCAN_TIMEOUT` | `8` | Discovery time in seconds |
 | `QD35_REQUEST_TIMEOUT` | `4` | Per-command response timeout |
+| `QD35_ALARM_ALLOW_REMOTE_AUDIO` | `0` | Permit public HTTP(S) alarm streams after public-IP validation |
+| `QD35_ALARM_ALLOWED_HOSTS` | unset | Comma-separated exact host allowlist for remote alarm streams |
+| `QD35_ALARM_MEDIA_DIR` | unset | Directory containing allowed local alarm audio files |
+| `QD35_ALARM_STATE_PATH` | XDG state dir | Override persistent alarm JSON location |
+| `QD35_ALARM_UNIT_DIR` | XDG user units | Override systemd user-unit directory, primarily for tests |
 
 Logs go to stderr; stdout remains reserved for MCP messages.
 
@@ -132,6 +146,8 @@ Logs go to stderr; stdout remains reserved for MCP messages.
 - **Device busy:** only one controller may hold the BLE connection. Close the phone app and retry.
 - **LDAC disconnect:** expected. On tested firmware, an actual LDAC change invalidated the old Classic bond. Remove that stale host pairing, pair again, then call `qd35_get_status`. The speaker itself recovered without a physical power-cycle.
 - **Audio is not connected:** BLE control and Classic Bluetooth audio are separate links.
+
+See [docs/alarm-clock.md](docs/alarm-clock.md) for pairing, sunrise behavior, stream security, persistence, and operational limits.
 
 See [docs/app-features.md](docs/app-features.md), [docs/protocol.md](docs/protocol.md), and [docs/hardware-validation.md](docs/hardware-validation.md) for the evidence and current limits.
 

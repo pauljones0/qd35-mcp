@@ -106,6 +106,8 @@ The app requests ATT MTU 512 and waits two seconds before the first chunk. On th
 
 Official downloads use a fixed Edifier HTTPS allowlist, a one-megabyte bound, pinned SHA-256 values, and structural validation before transfer. The palette transform multiplies each of the first three components by the selected palette component and floors the result after division by 255; the first two bytes and fourth component are preserved.
 
+The local diagnostic compiler uses the same validated geometry but only exposes four fixed patterns: a 37-address chase, RGB bars, a recovered-control timing sweep, and a low-output fourth-component sweep. On live firmware 1.3.0 the 37-frame chase uploaded in 37 correlated chunks and activated at 10% brightness. These patterns intentionally retain the unresolved control unit and fourth component as experiment subjects rather than assigning guessed meanings.
+
 ## Evidence discipline
 
 Protocol constants came from official app definitions and were then checked against live QD35 replies. Related open-source projects informed transport design but were not treated as QD35 proof:

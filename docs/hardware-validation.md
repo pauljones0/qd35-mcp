@@ -60,6 +60,12 @@ All four action payloads were sent live. During the play/pause test, `C3` playba
 changed from `03` to `0D` after play. Next/previous were transmitted, but a multi-track
 source was not available for independent track-title verification.
 
+## Alarm/audio host integration
+
+The Classic QD35 endpoint was paired and trusted, and PipeWire exposed its 48 kHz stereo A2DP sink. A low-volume eight-second `mpv` smoke test played SomaFM's official Groove Salad MP3 stream through that sink and restored the original speaker volume afterward. A disposable systemd user timer launched the standalone alarm runner, synchronized the 12-hour Saskatoon clock, selected Bluetooth input, applied its light step, exited successfully, and was removed.
+
+The overnight keepalive was then tested by deliberately dropping only the host's Classic connection. BlueZ changed the device's ephemeral `Paired` state to `no`; an initial implementation incorrectly treated that as a reason not to reconnect. After removing that assumption, the enabled service reconnected, re-established pairing, and restored the A2DP endpoint in 34 seconds without opcode `CD`, pairing-record removal, or speaker power cycling.
+
 ## Disruptive-operation validation
 
 The user explicitly authorized these tests:

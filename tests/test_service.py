@@ -115,6 +115,20 @@ async def test_custom_light_upload_uses_negotiated_geometry(
     assert extended[4] > 0
 
 
+async def test_diagnostic_light_upload_is_bounded_and_uses_low_brightness(
+    config: Config,
+) -> None:
+    transport = FakeTransport()
+    result = await QD35Service(transport, config).apply_custom_light(
+        "rgb_bars", activation_brightness=10
+    )
+    assert result["applied"] is True
+    assert result["generated_animation"]["frames"] == 1
+    assert result["bytes_uploaded"] == 150
+    assert result["custom_light_after"]["asset_id"] == 1
+    assert result["lighting"]["effects"][-1]["brightness"] == 10
+
+
 async def test_fake_custom_light_preserves_palette(
     config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:

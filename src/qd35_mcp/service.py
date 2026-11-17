@@ -7,8 +7,9 @@ from functools import wraps
 from typing import Any
 
 from . import constants as c
+from .animations import build_diagnostic_animation, list_diagnostic_animations
 from .config import Config
-from .custom_lights import fetch_custom_light_asset, list_custom_lights
+from .custom_lights import CustomLightAsset, fetch_custom_light_asset, list_custom_lights
 from .errors import (
     DangerousWritesDisabled,
     OutcomeUnknown,
@@ -315,7 +316,10 @@ class QD35Service:
         return {**result, "events": parsed_events}
 
     async def custom_light_catalog(self) -> dict[str, object]:
-        return list_custom_lights()
+        return {
+            "official": list_custom_lights(),
+            "diagnostic": list_diagnostic_animations(),
+        }
 
     @serialized_mutation
     async def set_volume(self, level: int) -> dict[str, object]:
@@ -778,10 +782,13 @@ class QD35Service:
         preset: str,
         palette_key: int | None = None,
         activate: bool = True,
+        activation_brightness: int | None = None,
     ) -> dict[str, object]:
-        """Download a hash-pinned official animation and upload it using 79/7A/7B."""
+        """Upload a verified official or bounded diagnostic animation using 79/7A/7B."""
         self._write_allowed()
         preset = preset.strip().lower().replace("-", "_")
+        if activation_brightness is not None and not 1 <= activation_brightness <= 100:
+            raise ValueError("activation_brightness must be between 1 and 100")
         capabilities = parse_capabilities(await self._request(c.QUERY_CAPABILITIES))
         if not capabilities["supported"]["lighting"]:
             raise ProtocolError("D8 does not advertise ambient lighting support")
@@ -798,7 +805,30 @@ class QD35Service:
         ):
             raise ProtocolError("speaker does not report QD35 group 1 Extended lighting")
         custom_before = parse_custom_light_status(await self._request(c.QUERY_CUSTOM_LIGHT))
-        asset, data = await asyncio.to_thread(fetch_custom_light_asset, preset, palette_key)
+        generated: dict[str, object] | None = None
+        if preset in {
+            "pixel_chase",
+            "rgb_bars",
+            "timing_sweep",
+            "fourth_byte_sweep",
+        }:
+            if palette_key is not None:
+                raise ValueError("diagnostic animations do not accept palette_key")
+            animation = build_diagnostic_animation(preset)
+            data = animation.data
+            generated = animation.to_dict()
+            # Use the live-verified Spiral compatibility slot. The generated body is
+            # validated independently and the QD35 reports it as Extended asset 01.
+            asset = CustomLightAsset(
+                name=preset,
+                asset_id=1,
+                light_type=3,
+                url="generated://diagnostic",
+                sha256=animation.sha256,
+                start_asset_id=1,
+            )
+        else:
+            asset, data = await asyncio.to_thread(fetch_custom_light_asset, preset, palette_key)
         write_capacity = await self.transport.prepare_large_write(163)
         if self.transport.connection_identity != self._transaction_identity:
             raise ProtocolError("Bluetooth session changed during custom-light MTU preparation")
@@ -929,10 +959,18 @@ class QD35Service:
             )
             if extended is None:
                 raise ProtocolError("lighting readback omitted Extended effect 7")
-            if activate and installed and (
-                lighting_after["selected_effect_id"] != 7
-                or extended["raw_color"] != [1, 0, 0]
-                or extended["brightness"] == 0
+            if (
+                activate
+                and installed
+                and (
+                    lighting_after["selected_effect_id"] != 7
+                    or extended["raw_color"] != [1, 0, 0]
+                    or extended["brightness"] == 0
+                    or (
+                        activation_brightness is not None
+                        and extended["brightness"] != activation_brightness
+                    )
+                )
             ):
                 payload = bytes(
                     (
@@ -941,7 +979,7 @@ class QD35Service:
                         1,
                         0,
                         0,
-                        extended["brightness"] or 100,
+                        activation_brightness or extended["brightness"] or 100,
                         extended["wire_speed"],
                     )
                 )
@@ -973,12 +1011,17 @@ class QD35Service:
             and lighting_after["selected_effect_id"] == 7
             and extended_after["raw_color"] == [1, 0, 0]
             and extended_after["brightness"] > 0
+            and (
+                activation_brightness is None
+                or extended_after["brightness"] == activation_brightness
+            )
         )
         return {
             "applied": installed,
             "preset": preset,
             "palette_key": palette_key,
             "asset_sha256": asset.sha256,
+            "generated_animation": generated,
             "bytes_uploaded": len(data),
             "chunks_uploaded": completed_chunks,
             "transfer": start,

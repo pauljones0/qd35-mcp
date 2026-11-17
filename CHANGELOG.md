@@ -26,4 +26,13 @@
   lighting reset validation against firmware 1.3.0.
 - Live duplicate-sequence validation confirming custom-light lost-ack retries are idempotent on
   firmware 1.3.0, followed by successful Gradient and visible-light restoration.
+- Validated diagnostic-animation compiler with 37-address chase, RGB bars, timing sweep, and
+  fourth-component sweep; the full chase was uploaded and activated live at 10% brightness.
+- Persistent timezone-aware sunrise alarms backed by systemd user timers, gradual light and
+  speaker-volume ramps, local/public-stream audio through `mpv`, and an explicit overnight
+  Classic-audio reconnect service that never sends the speaker disconnect command.
+- Live Saskatoon 12-hour clock sync, Classic pairing/PipeWire sink validation, systemd alarm
+  runner smoke test, and low-volume official SomaFM stream playback.
+- Live keepalive fault injection uncovered BlueZ's ephemeral `Paired: no` transition after a
+  host disconnect; the reconnect loop now ignores that misleading gate and restored A2DP in 34s.
 
