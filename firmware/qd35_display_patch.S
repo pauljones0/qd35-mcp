@@ -156,10 +156,7 @@ display_write:
     ldrb r0, [r7]
     and r0, r0, #0xf0
     strb r0, [r7]
-    ldrb r0, [r7, #1]
-    orr r0, r0, #0x3f
-    strb r0, [r7, #1]
-    movs r2, #2
+    movs r2, #1
 2:  ldrb r0, [r7, r2]
     and r0, r0, #0xc0
     strb r0, [r7, r2]
@@ -191,6 +188,15 @@ display_write:
     adds r2, #1
     cmp r2, #8
     blo 6b
+
+    /* With both non-clock groups disabled, byte zero must also be empty.
+     * Its low five bits are not clock digits and were missed by the original
+     * semantic masks. This guarantees a digits-only electrical framebuffer;
+     * the physical wordmark still catches light from illuminated digits. */
+    tst r5, #4
+    bne 7f
+    movs r0, #0
+    strb r0, [r7]
 
 7:  tst r5, #1
     bne 8f

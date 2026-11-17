@@ -91,8 +91,11 @@ effect zero inside the normal `6B` seven-byte payload:
 follow ordinary lighting brightness, and raw-grid mode. `35` is a mandatory magic
 byte; invalid operations/indexes/brightness are rejected without partially changing
 state. The patched parser returns the ordinary `6B` response so the transport can
-distinguish an accepted command from stock firmware or a malformed request. There is
-no device-side query for the private SRAM state.
+distinguish an accepted frame from a malformed request, but that response is not
+independent display readback. There is no device-side query for the private SRAM
+state. The logo flag masks its dedicated electrical grid; a live raw frame with every
+non-digit bit zero still illuminated the physical wordmark from the clock digits, so
+whole-display off is the only verified full-extinction state.
 
 The live D8 block decodes to rename mode 4 (35 UTF-8 bytes, no packaged write), EQ profile 12, UI skin 10, and support for name/address/firmware queries, disconnect, shutdown, reset, LDAC, input, volume, ambient lighting, audio-decoding status, and the hour/minute/second clock dialect. It does not advertise the no-audio auto-shutdown, shutdown timer, separate light-color setting, or lighting timer bits. Byte 19 bit 4 is version-sensitive: app 8.4.33 treats set as media-info support, while 8.5.5 treats clear as support; the live clear bit therefore does not mean metadata is absent, and a `50` event was observed. Capability parsing is length-aware, treats byte 4 as the 8.5.5 bit field, and preserves trailing or unknown data instead of assuming a fixed 22-byte format.
 

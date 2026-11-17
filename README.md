@@ -25,9 +25,11 @@ The protocol is independently implemented from observed behavior and Edifier Con
 - Retain and expose unsolicited playback/title/artist events instead of discarding them
 - Play/pause and skip the active Bluetooth player
 - Sync the clock and choose 12/24-hour display
-- With the optional open MCU patch: independently turn the clock, EDIFIER logo, status symbols,
-  or whole front display on/off; select CMS1640 brightness 0–7; follow the right-side lighting
-  control; or address all eight raw display-grid bytes
+- With the optional open MCU patch: turn the clock digits, status-symbol grid, or whole front
+  display on/off; select CMS1640 brightness 0–7; follow the right-side lighting control; or
+  address all eight raw display-grid bytes. The logo grid can be masked electrically, but the
+  physical EDIFIER wordmark still catches light from illuminated clock digits; full extinction
+  is verified only with the whole front display off.
 - Select LDAC off, 48/44.1 kHz, or 96 kHz
 - Rename, disconnect Bluetooth audio, power off, or factory-reset the speaker
 - Install persistent sunrise alarms that ramp light and speaker volume, play local audio or public internet radio, and keep paired Classic audio connected overnight
@@ -109,7 +111,7 @@ Do not copy that example address unless it is your speaker.
 | `qd35_set_eq_band` | Set band 0–5 from -3 to +3 dB in 0.5 dB steps |
 | `qd35_reset_eq` | Restore all six DIY bands to their firmware defaults |
 | `qd35_set_light` | Change effect-specific RGB/color mode, global brightness, supported speed, or enabled state |
-| `qd35_set_display` | Patched firmware: independently control display power, clock, logo, symbols, brightness, dial-follow, and raw mode |
+| `qd35_set_display` | Patched firmware: control display power, digit/logo/symbol grids, brightness, dial-follow, and raw mode; results disclose clock-to-logo optical coupling |
 | `qd35_write_display_grid_byte` | Patched firmware expert mode: write one of eight raw CMS1640 grid bytes |
 | `qd35_reset_display` | Patched firmware: restore volatile stock-equivalent display defaults |
 | `qd35_install_display_firmware` | Fetch the exact pinned Edifier source, apply the bundled patch, and flash the pinned QD35 |
@@ -141,10 +143,12 @@ The diagnostic catalog includes the measured front-view emission centroid for ev
 
 The 37-address RGB chain can be disabled while Bluetooth remains active. The clock,
 status icons, and EDIFIER wordmark use a separate display driver. Stock firmware has
-no independent controls, but the project's optional, live-validated 400-byte MCU
+no stock controls, but the project's optional, live-validated 400-byte MCU
 patch adds a private fail-closed command path while preserving ordinary lighting and
-Bluetooth audio. It supports display power, clock, logo, symbols, brightness 0–7,
-right-side-lighting-control following, and all eight raw grid bytes. See
+Bluetooth audio. It supports display power, digit/logo/symbol grid masks, brightness
+0–7, right-side-lighting-control following, and all eight raw grid bytes. A live
+digits-only raw frame proved the visible wordmark is illuminated by the clock itself,
+so only whole-display off guarantees it is fully dark. See
 [docs/display-firmware.md](docs/display-firmware.md) before installing it.
 
 Setting tools read state back when the protocol allows it. Media `C2` is one-way, but the tool also queries `C3` playing state; that can verify play/pause, not track changes. Clock sync reports a device success acknowledgement but `applied` remains unknown because the protocol has no clock readback. A timeout, malformed confirmation, or connection loss after any write is reported as an uncertain outcome. Firmware 1.3.0 restarts Bluetooth after an LDAC change and may invalidate the tested host bond, so re-pair Classic audio and call `qd35_get_status` to verify the requested mode. The tool avoids the restart entirely when the requested mode is already active.

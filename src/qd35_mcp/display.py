@@ -71,10 +71,26 @@ def reset_payload() -> bytes:
 
 
 def describe_flags(flags: int, brightness: int) -> dict[str, object]:
+    power = bool(flags & DISPLAY_POWER)
+    clock = bool(flags & DISPLAY_CLOCK)
+    logo_grid = bool(flags & DISPLAY_LOGO)
+    if not power:
+        logo_extinction = "verified"
+    elif clock:
+        logo_extinction = "not_achievable_with_clock_on"
+    else:
+        logo_extinction = "unverified"
     return {
-        "power": bool(flags & DISPLAY_POWER),
-        "clock": bool(flags & DISPLAY_CLOCK),
-        "logo": bool(flags & DISPLAY_LOGO),
+        "power": power,
+        "clock": clock,
+        "logo": logo_grid,
+        "logo_grid_enabled": logo_grid,
+        "visible_logo_extinction": logo_extinction,
+        "logo_optical_coupling": (
+            "The EDIFIER wordmark remains visibly illuminated whenever the clock digits "
+            "are lit, even with every non-digit driver bit zero. Whole-display off is the "
+            "only verified full-extinction state."
+        ),
         "symbols": bool(flags & DISPLAY_SYMBOLS),
         "follow_lighting_dial": bool(flags & DISPLAY_FOLLOW_DIAL),
         "raw_mode": bool(flags & DISPLAY_RAW_MODE),

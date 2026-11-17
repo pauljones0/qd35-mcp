@@ -41,15 +41,19 @@
   light state without selecting input, changing volume, starting playback, or touching Classic audio.
 - Bedtime and snooze now blank the complete patched front display after live bedside observation
   found the CMS1640 minimum nonzero level too bright.
-- Optional exact-hash display firmware adds independent clock, EDIFIER logo, status-symbol,
+- Optional exact-hash display firmware adds clock-digit, logo-grid, status-symbol,
   whole-display, brightness 0–7, right-side-lighting-control, and raw CMS1640 control.
 - Bundled original 400-byte patch, deterministic stock-hash patcher, exact-stock rollback,
   recovered OTA v2 transport, and fixed-purpose gated MCP install/restore tools.
 - Live 320-chunk patched-image OTA plus semantic, brightness, raw-grid, reset, dial-follow,
   normal lighting readback, and ordinary status-continuity validation on firmware 1.3.0.
-- Bedtime alarms now blank RGB/logo/symbols while retaining a minimum-brightness clock;
-  sunrise ramps both RGB 0–100 and the patched display 0–7.
+- Bedtime alarms now blank RGB and the complete front display; sunrise restores and ramps
+  both RGB 0–100 and the patched display 0–7.
 - Bedside radio defaults to hardware volume 4/16 with 50% player gain and is capped at 8/16.
 - Added persistent systemd-backed snooze with immediate darkening and a short two-minute
   light/audio fade after the requested 1–60 minute delay.
+- Corrected the patch's clock-off mask and forced a true digits-only framebuffer when logo and
+  symbols are disabled. A live raw-frame test proved the physical EDIFIER wordmark still catches
+  light from clock digits, so MCP results disclose that only whole-display off provides verified
+  logo extinction.
 

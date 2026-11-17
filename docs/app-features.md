@@ -17,7 +17,7 @@ This inventory combines the model-specific Edifier Connect operation manual, the
 | Media metadata/events | Playback, title, and artist notifications | Retained, bounded event history with strict parsing; live `50 00 00 00` event captured |
 | Built-in BGM | 32 app audio tracks across 10 categories, repeat/selection | Not bundled; these are app-local copyrighted media, not BLE-resident tracks |
 | Clock | Sync to host, 12-hour or 24-hour format | Preserve, 12h, and 24h payloads acknowledged live; no clock readback exists |
-| Clock/logo illumination | Stock firmware keeps both on at fixed maximum display-driver brightness while active | No app/BLE command exists for clock off, logo off, or display dimming; RGB can be off independently, while standby blanks everything but also exits active Bluetooth mode |
+| Clock/logo illumination | Stock firmware keeps both on at fixed maximum display-driver brightness while active | The optional patch can dim or blank the driver while Bluetooth stays active. A digits-only raw frame proved the physical wordmark remains illuminated by clock light; only whole-display off fully extinguishes it. |
 | LDAC | 96 kHz, 48/44.1 kHz, disabled | 48/44.1 kHz and 96 kHz both verified by post-restart readback, then restored off |
 | Device name/info | Rename; show address and firmware | Changed name, exact 35-byte D8 boundary, and restoration verified live |
 | Bluetooth disconnect | Disconnect Classic audio | Live-verified behind dangerous-operation gate |
@@ -31,7 +31,9 @@ The 2023 app manual presents ten visual labels/modes. Firmware 1.3.0 directly re
 Firmware disassembly separates the 37-node RGB chain from the CMS1640-driven clock,
 status icons, and EDIFIER wordmark. The wordmark has its own grid bit and the clock
 digits can be blanked internally, but no stock Bluetooth command reaches either
-operation. See [firmware-analysis.md](firmware-analysis.md).
+operation. Electrical separation does not provide optical isolation: the transparent
+front assembly carries clock light into the wordmark. See
+[firmware-analysis.md](firmware-analysis.md).
 
 Primary references:
 

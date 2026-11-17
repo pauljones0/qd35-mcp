@@ -186,7 +186,7 @@ def create_server(
         follow_lighting_dial: bool | None = None,
         raw_mode: bool | None = None,
     ) -> dict[str, object]:
-        """Control patched clock/logo/symbol grids and brightness independently of Bluetooth."""
+        """Control patched display grids; the visible logo optically couples to lit digits."""
         return await call(
             service.set_display,
             power,

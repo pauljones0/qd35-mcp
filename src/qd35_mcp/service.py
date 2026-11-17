@@ -351,7 +351,9 @@ class QD35Service:
                 "factory reset",
                 *(
                     [
-                        "independent display power, clock, logo and symbols",
+                        "display power, clock digits, logo-grid and symbol-grid masks",
+                        "verified whole-display extinction; the visible EDIFIER wordmark "
+                        "cannot be fully dark while clock digits are lit",
                         "display brightness 0-7 or follow the right-side lighting dial",
                         "raw access to all eight CMS1640 display-grid bytes",
                     ]
@@ -413,7 +415,10 @@ class QD35Service:
             "volatile": True,
             "note": (
                 "The patch resets to display on, clock/logo/symbols on, brightness 7 after a "
-                "speaker power cycle. Values here are locally retained acknowledgements."
+                "speaker power cycle. Values here are locally retained acknowledgements. "
+                "The logo grid can be masked, but the visible wordmark remains illuminated "
+                "whenever clock digits are lit; whole-display off is the only verified "
+                "full-extinction state."
             ),
         }
 
@@ -446,7 +451,7 @@ class QD35Service:
         follow_lighting_dial: bool | None = None,
         raw_mode: bool | None = None,
     ) -> dict[str, object]:
-        """Set independent display masks implemented by the optional MCU patch."""
+        """Set patched driver masks; front-panel coupling keeps the logo visible with digits."""
         self._display_write_allowed()
         if brightness is not None and not 0 <= brightness <= 7:
             raise ValueError("brightness must be from 0 to 7")

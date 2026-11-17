@@ -184,10 +184,11 @@ brightness, or clock-off field in that command.
 
 The static wordmark is independently represented inside the segment RAM. During
 display initialization, `0x08006A2E(1)` sets grid bit 6 across all eight segment
-bytes; the same routine supports clearing it with argument zero. It is called only
-once, with argument one, from `0x08006D50`. No parsed Bluetooth/MCU command calls it
-again. This is strong firmware evidence that the logo is electrically controllable
-but deliberately fixed on by the stock firmware.
+bytes. Its zero branch leaves those bits unchanged rather than clearing them. It is
+called only once, with argument one, from `0x08006D50`; no parsed Bluetooth/MCU
+command calls it again. The patch can mask that dedicated grid inside its copied
+framebuffer, but the stock firmware deliberately fixes it on. This electrical mapping
+does not establish optical independence from neighboring clock segments.
 
 The only production path that blanks both the clock and wordmark is speaker standby:
 `0x08008382` clears the RGB output, serializes the black frame, and sends CMS1640
@@ -206,12 +207,14 @@ Consequently, unmodified stock firmware 1.3.0 supports these combinations:
 | Clock/logo brightness adjustment | not exposed; hard-coded maximum |
 | All lights and displays off | supported only through speaker standby |
 
-The project's optional patch implements those formerly hypothetical controls. It
+The project's optional patch implements those formerly hypothetical driver controls. It
 reuses otherwise-invalid lighting effect zero as a private, magic-guarded command
 path, hooks the common display writer, and keeps its state in volatile SRAM. It can
-mask digits, logo, and other symbol bits independently; issue display off; select
+mask digit, logo-grid, and other symbol bits independently; issue display off; select
 brightness commands `0x88..0x8F`; follow the ordinary 0–100 lighting value; and use
-all eight raw grid bytes. The normal power-on default is unchanged. See
+all eight raw grid bytes. A live digits-only raw frame still illuminated the printed
+EDIFIER wordmark, proving optical coupling from the clock; full visible extinction
+requires whole-display off. The normal power-on default is unchanged. See
 `display-firmware.md` for the memory map, hashes, rollback process, and live tests.
 
 ## Lighting-MCU command inventory

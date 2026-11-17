@@ -30,7 +30,7 @@ The implementation exposes:
 
 - whole display power without changing Bluetooth or audio state;
 - clock-digit visibility;
-- EDIFIER-logo visibility;
+- the dedicated EDIFIER-logo grid mask (the visible wordmark still catches light from clock digits);
 - remaining status-symbol visibility;
 - manual CMS1640 brightness 0–7;
 - brightness following the ordinary 0–100 lighting value changed by the right-side
@@ -40,10 +40,11 @@ The implementation exposes:
 The stock BLE protocol cannot query this private SRAM state. MCP results therefore
 report a firmware acknowledgement and locally retained desired state, not an
 independent physical readback. Visual confirmation remains authoritative. In
-particular, a later bedside check found the wordmark still visible with the clock on
-after `logo=false`; whole-display off was visually confirmed. Logo-only masking is
-therefore retained as experimental until a targeted grid test separates an incorrect
-mask from optical spill.
+particular, a later raw-frame bedside check wrote only the six clock-digit bit planes
+and zeroed every other one of the 64 driver bits. The wordmark remained visibly lit.
+This proves the residual wordmark is caused by physical front-panel coupling, not a
+remaining semantic mask or source-buffer error. Whole-display off was visually
+confirmed and is the only verified full-extinction state.
 
 ## Reproducible build
 
@@ -65,7 +66,7 @@ PYTHONPATH=src python tools/build_display_firmware.py \
 The deterministic result is 40,880 bytes with SHA-256:
 
 ```text
-f58b6cd010f7a3073d8f2f0e50685eb94599f6c57b034e44977984f5f24c6638
+83ef705bc545db3b6054a48add9e310ace886fbb76312abe7204229c35891b5b
 ```
 
 `firmware/qd35_display_patch.S` is the readable source. The patcher validates the
@@ -139,7 +140,8 @@ Raw mode is expert-only and separately requires `QD35_ENABLE_DANGEROUS=1`:
 
 Semantic clock/logo/symbol masks still apply on top of raw data. The raw interface
 exposes every driver bit without pretending that every status-icon bit has already
-been physically named.
+been physically named. Electrical logo-grid masking does not overcome the optical
+illumination from lit digit segments.
 
 ## Live validation
 
@@ -148,8 +150,8 @@ chunks. After the lighting MCU restarted, the following all returned the stock
 `SET_LIGHT` response payload `01 07 01 00 00 14 FF`:
 
 - clock off with logo/symbols on;
-- logo-off command with clock/symbols on (acknowledged, but a later bedside check did
-  not visually confirm full extinction while the clock remained lit);
+- logo-grid off with clock/symbols on (the command was acknowledged, but the physical
+  wordmark remained illuminated by the clock);
 - symbols off with clock/logo on;
 - whole display off;
 - manual brightness 0, 3, and 7;

@@ -41,8 +41,18 @@ despite a fresh `logo=false` acknowledgement. Repeating the command did not chan
 that observation. Setting whole-display power false immediately made every front
 segment dark, independently confirming that the installed hook executes. The alarm's
 night state therefore uses whole-display off rather than claiming a visually verified
-clock-only/logo-off state. Whether the residual wordmark is a mask error or optical
-spill from the clock remains open and requires a targeted physical grid test.
+clock-only/logo-off state.
+
+That targeted grid test was subsequently completed. Raw mode wrote the current six
+time digits into grid bytes `1..7` while byte `0` and every non-digit bit remained
+zero (`00 1E 19 03 1F 3D 27 1F` for `02:35:51`). The EDIFIER wordmark was still
+visibly illuminated. This rules out a semantic mask, stale source buffer, or unknown
+logo bit: the wordmark catches light from the active digit segments. A corrected
+400-byte patch also fixed the clock-off mask inversion and enforced a strict
+digits-only framebuffer. It transferred as 320/320 acknowledged 128-byte chunks with
+SHA-256 `83ef705bc545db3b6054a48add9e310ace886fbb76312abe7204229c35891b5b`.
+After the raw test, RGB brightness zero was independently read back and the complete
+front display was turned off for the night.
 
 ## Read validation
 

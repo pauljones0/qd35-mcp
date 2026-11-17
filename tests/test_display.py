@@ -8,8 +8,10 @@ from qd35_mcp.display import (
     DISPLAY_DEFAULT_FLAGS,
     DISPLAY_FOLLOW_DIAL,
     DISPLAY_LOGO,
+    DISPLAY_POWER,
     DISPLAY_RAW_MODE,
     DISPLAY_SYMBOLS,
+    describe_flags,
     grid_payload,
     state_payload,
 )
@@ -38,6 +40,14 @@ def test_payload_validation() -> None:
         state_payload(0x40, 7)
     with pytest.raises(ValueError):
         grid_payload(8, 0)
+
+
+def test_display_state_reports_physical_logo_coupling() -> None:
+    clock_only = describe_flags(DISPLAY_CLOCK | DISPLAY_POWER, 0)
+    assert clock_only["logo_grid_enabled"] is False
+    assert clock_only["visible_logo_extinction"] == "not_achievable_with_clock_on"
+    powered_off = describe_flags(0, 0)
+    assert powered_off["visible_logo_extinction"] == "verified"
 
 
 @pytest.mark.asyncio
