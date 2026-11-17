@@ -1,4 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#0891b2"/>
-  <text x="32" y="32" dy="0.35em" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="26" font-weight="600" fill="#ffffff">QM</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="QD35 speaker">
+  <defs>
+    <linearGradient id="bg" x1="8" y1="4" x2="58" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F172A"/>
+      <stop offset="1" stop-color="#1E293B"/>
+    </linearGradient>
+    <linearGradient id="led" x1="17" y1="45" x2="47" y2="45" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22D3EE"/>
+      <stop offset=".5" stop-color="#A78BFA"/>
+      <stop offset="1" stop-color="#FB7185"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <rect x="13" y="10" width="38" height="44" rx="6" fill="#020617" stroke="#94A3B8" stroke-width="2"/>
+  <circle cx="32" cy="29" r="11" fill="#111827" stroke="#CBD5E1" stroke-width="2"/>
+  <circle cx="32" cy="29" r="5" fill="#334155"/>
+  <path d="M18 45h4m3 0h4m3 0h4m3 0h7" stroke="url(#led)" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="45" cy="17" r="2" fill="#22D3EE"/>
 </svg>
