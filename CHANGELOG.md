@@ -39,10 +39,17 @@
   alarms reinforce their named zone and clock results report the zone actually serialized.
 - Optional bedtime preparation uses a separate preceding-night timer to apply the low overnight
   light state without selecting input, changing volume, starting playback, or touching Classic audio.
+- Bedtime and snooze now blank the complete patched front display after live bedside observation
+  found the CMS1640 minimum nonzero level too bright.
 - Optional exact-hash display firmware adds independent clock, EDIFIER logo, status-symbol,
   whole-display, brightness 0–7, right-side-lighting-control, and raw CMS1640 control.
 - Bundled original 400-byte patch, deterministic stock-hash patcher, exact-stock rollback,
   recovered OTA v2 transport, and fixed-purpose gated MCP install/restore tools.
 - Live 320-chunk patched-image OTA plus semantic, brightness, raw-grid, reset, dial-follow,
   normal lighting readback, and ordinary status-continuity validation on firmware 1.3.0.
+- Bedtime alarms now blank RGB/logo/symbols while retaining a minimum-brightness clock;
+  sunrise ramps both RGB 0–100 and the patched display 0–7.
+- Bedside radio defaults to hardware volume 4/16 with 50% player gain and is capped at 8/16.
+- Added persistent systemd-backed snooze with immediate darkening and a short two-minute
+  light/audio fade after the requested 1–60 minute delay.
 

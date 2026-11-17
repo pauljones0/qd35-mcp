@@ -20,13 +20,13 @@ post-restart scan initially missed the advertisement; BlueZ still held the exact
 A400/manufacturer record, and a 30-second broad scan found it again at -61 dBm. This
 ruled out a failed boot rather than treating the first negative as dispositive.
 
-The first private effect-zero command then returned the ordinary `6B` response
-payload `01 07 01 00 00 14 FF`, which unmodified firmware cannot do. The live matrix
-exercised clock-only off, logo-only off, symbols-only off, whole-display off, manual
-brightness 0/3/7, raw writes for all eight display-grid indexes, raw all-segments,
-safe reset, and lighting-control-follow mode. Every command returned that valid
-response. The final state is all semantic groups visible, raw mode off, and display
-brightness following the ordinary right-side lighting control.
+The first private effect-zero command returned the ordinary `6B` lighting-state
+payload `01 07 01 00 00 14 FF`. That generic response is not independent display
+readback and must not by itself be treated as proof that a requested mask was
+physically applied. The live matrix exercised clock, logo, symbol, whole-display,
+manual-brightness 0/3/7, raw-grid, reset, and lighting-control-follow commands. The
+whole-display-off result and subsequent restoration were visually confirmed; the
+other commands returned the same valid but generic response.
 
 With follow mode active, ordinary lighting brightness was changed to 0, then 100,
 then restored to the original 20; every `6A` readback matched. A final status read
@@ -34,6 +34,15 @@ still returned firmware 1.3.0, volume 11/16, Bluetooth input, Extended lighting,
 20% global lighting brightness. No audio-disconnect command was issued.
 The RTC was finally resynchronized at 02:04:20 CST (`America/Regina`) in 12-hour
 mode, returning `01`; all display groups/dial-follow were reasserted afterward.
+
+A later bedside check found that brightness level 0 was still too bright and that
+the EDIFIER wordmark remained visibly illuminated while the clock mask stayed on,
+despite a fresh `logo=false` acknowledgement. Repeating the command did not change
+that observation. Setting whole-display power false immediately made every front
+segment dark, independently confirming that the installed hook executes. The alarm's
+night state therefore uses whole-display off rather than claiming a visually verified
+clock-only/logo-off state. Whether the residual wordmark is a mask error or optical
+spill from the clock remains open and requires a targeted physical grid test.
 
 ## Read validation
 

@@ -54,6 +54,7 @@ def sample_alarm(**changes: object) -> SunriseAlarm:
         "classic_device": "AA:BB:CC:DD:EE:FF",
         "enabled": True,
         "created_at": "2026-11-17T00:00:00+00:00",
+        "custom_display": True,
     }
     values.update(changes)
     return SunriseAlarm(**values)  # type: ignore[arg-type]
@@ -115,6 +116,7 @@ class FakeTimers:
         self.stopped: list[str] = []
         self.keepalive_installed: list[str] = []
         self.keepalive_removed = 0
+        self.snoozed: list[tuple[str, int]] = []
 
     def install(self, alarm: SunriseAlarm) -> None:
         self.installed.append(alarm)
@@ -127,6 +129,10 @@ class FakeTimers:
 
     def stop(self, alarm_id: str) -> None:
         self.stopped.append(alarm_id)
+
+    def snooze(self, alarm_id: str, minutes: int) -> None:
+        self.stopped.append(alarm_id)
+        self.snoozed.append((alarm_id, minutes))
 
     def state(self, _alarm_id: str) -> dict[str, object]:
         return {
@@ -187,9 +193,13 @@ async def test_manager_persists_and_controls_alarm(tmp_path) -> None:
     assert keepalive["speaker_disconnect_command_sent"] is False
     assert (await manager.start_now("weekday-wake"))["started"] is True
     assert (await manager.stop("weekday-wake"))["bluetooth_disconnected"] is False
+    snoozed = await manager.snooze("weekday-wake", 10)
+    assert snoozed["snoozed"] is True
+    assert snoozed["night_light_applied"] is True
     assert (await manager.delete("weekday-wake"))["deleted"] is True
     assert timers.started == ["weekday-wake"]
-    assert timers.stopped == ["weekday-wake"]
+    assert timers.stopped == ["weekday-wake", "weekday-wake"]
+    assert timers.snoozed == [("weekday-wake", 10)]
     assert timers.removed == ["weekday-wake"]
     assert timers.keepalive_removed == 1
 
@@ -206,3 +216,18 @@ def test_systemd_units_include_separate_bedtime_preparation(tmp_path, monkeypatc
         prepare_timer.read_text(encoding="utf-8")
     )
     assert ("enable", "--now", "qd35-alarm-weekday-wake-prepare.timer") in calls
+    snooze_service = tmp_path / "units/qd35-alarm-weekday-wake-snooze.service"
+    assert "--snoozed" in snooze_service.read_text(encoding="utf-8")
+
+
+def test_systemd_snooze_timer_targets_short_fade_service(tmp_path, monkeypatch) -> None:
+    timers = SystemdUserTimers(tmp_path / "units", tmp_path / "alarms.json")
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(timers, "_run", lambda *args, **_kwargs: calls.append(args))
+    timers.install(sample_alarm())
+    timers.snooze("weekday-wake", 10)
+    timer = tmp_path / "units/qd35-alarm-weekday-wake-snooze.timer"
+    text = timer.read_text(encoding="utf-8")
+    assert "OnActiveSec=10min" in text
+    assert "Unit=qd35-alarm-weekday-wake-snooze.service" in text
+    assert ("start", "qd35-alarm-weekday-wake-snooze.timer") in calls

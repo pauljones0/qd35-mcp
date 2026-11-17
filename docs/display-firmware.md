@@ -39,7 +39,11 @@ The implementation exposes:
 
 The stock BLE protocol cannot query this private SRAM state. MCP results therefore
 report a firmware acknowledgement and locally retained desired state, not an
-independent physical readback. Visual confirmation remains authoritative.
+independent physical readback. Visual confirmation remains authoritative. In
+particular, a later bedside check found the wordmark still visible with the clock on
+after `logo=false`; whole-display off was visually confirmed. Logo-only masking is
+therefore retained as experimental until a targeted grid test separates an incorrect
+mask from optical spill.
 
 ## Reproducible build
 
@@ -144,7 +148,8 @@ chunks. After the lighting MCU restarted, the following all returned the stock
 `SET_LIGHT` response payload `01 07 01 00 00 14 FF`:
 
 - clock off with logo/symbols on;
-- logo off with clock/symbols on;
+- logo-off command with clock/symbols on (acknowledged, but a later bedside check did
+  not visually confirm full extinction while the clock remained lit);
 - symbols off with clock/logo on;
 - whole display off;
 - manual brightness 0, 3, and 7;

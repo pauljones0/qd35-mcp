@@ -6,10 +6,26 @@ import argparse
 import asyncio
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from .alarms import AlarmStore, SunriseAlarm, ramp_value
 from .server import create_service
+
+_ALARM_ENVIRONMENT_KEYS = (
+    "QD35_DEVICE",
+    "QD35_ENABLE_WRITES",
+    "QD35_CUSTOM_DISPLAY_FIRMWARE",
+    "QD35_SCAN_TIMEOUT",
+)
+
+
+def _restore_environment(previous: dict[str, str | None]) -> None:
+    for name, value in previous.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
 
 
 async def _run_command(*arguments: str, timeout: float = 20) -> tuple[int, str]:
@@ -64,7 +80,7 @@ async def _start_audio(alarm: SunriseAlarm) -> asyncio.subprocess.Process:
         "mpv",
         "--no-video",
         "--really-quiet",
-        "--volume=100",
+        "--volume=50",
         "--loop-playlist=inf",
         "--",
         alarm.audio_source,
@@ -74,15 +90,22 @@ async def _start_audio(alarm: SunriseAlarm) -> asyncio.subprocess.Process:
 
 async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[str, object]:
     previous_timezone = os.environ.get("TZ")
+    previous_environment = {
+        name: os.environ.get(name) for name in _ALARM_ENVIRONMENT_KEYS
+    }
     os.environ["TZ"] = alarm.timezone
     if hasattr(time, "tzset"):
         time.tzset()
     os.environ["QD35_DEVICE"] = alarm.ble_device
     os.environ["QD35_ENABLE_WRITES"] = "1"
+    os.environ["QD35_SCAN_TIMEOUT"] = "30"
+    if alarm.custom_display:
+        os.environ["QD35_CUSTOM_DISPLAY_FIRMWARE"] = "1"
     service = create_service()
     player: asyncio.subprocess.Process | None = None
     audio_started = False
     last_brightness: int | None = None
+    last_display_brightness: int | None = None
     last_volume: int | None = None
     duration = alarm.sunrise_minutes * 60
     audio_start = max(0, duration - alarm.audio_fade_minutes * 60)
@@ -102,6 +125,23 @@ async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[st
                 if result.get("applied") is not True:
                     raise RuntimeError(f"sunrise light step was not verified: {result}")
                 last_brightness = brightness
+            if alarm.custom_display:
+                display_brightness = ramp_value(0, 7, light_progress)
+                if display_brightness != last_display_brightness:
+                    display = await service.set_display(
+                        power=True,
+                        clock=True,
+                        logo=True,
+                        symbols=True,
+                        brightness=display_brightness,
+                        follow_lighting_dial=False,
+                        raw_mode=False,
+                    )
+                    if display.get("acknowledged") is not True:
+                        raise RuntimeError(
+                            f"sunrise display step was not acknowledged: {display}"
+                        )
+                    last_display_brightness = display_brightness
 
             if alarm.audio_source is not None and elapsed >= audio_start:
                 if not audio_started:
@@ -127,6 +167,7 @@ async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[st
             "alarm_id": alarm.alarm_id,
             "completed": True,
             "brightness": last_brightness,
+            "display_brightness": last_display_brightness,
             "speaker_volume": last_volume,
             "audio_started": audio_started,
             "bluetooth_disconnected": False,
@@ -144,16 +185,23 @@ async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[st
             os.environ["TZ"] = previous_timezone
         if hasattr(time, "tzset"):
             time.tzset()
+        _restore_environment(previous_environment)
 
 
 async def prepare_overnight(alarm: SunriseAlarm) -> dict[str, object]:
     """Apply the low overnight light state without touching Classic audio."""
     previous_timezone = os.environ.get("TZ")
+    previous_environment = {
+        name: os.environ.get(name) for name in _ALARM_ENVIRONMENT_KEYS
+    }
     os.environ["TZ"] = alarm.timezone
     if hasattr(time, "tzset"):
         time.tzset()
     os.environ["QD35_DEVICE"] = alarm.ble_device
     os.environ["QD35_ENABLE_WRITES"] = "1"
+    os.environ["QD35_SCAN_TIMEOUT"] = "30"
+    if alarm.custom_display:
+        os.environ["QD35_CUSTOM_DISPLAY_FIRMWARE"] = "1"
     service = create_service()
     try:
         await service.set_timezone(alarm.timezone, sync_now=False)
@@ -161,15 +209,33 @@ async def prepare_overnight(alarm: SunriseAlarm) -> dict[str, object]:
         light = await service.set_light(
             effect="static",
             rgb=alarm.light_rgb,
-            brightness=alarm.start_brightness,
+            brightness=0,
         )
         if light.get("applied") is not True:
             raise RuntimeError(f"overnight light state was not verified: {light}")
+        display: dict[str, object] | None = None
+        if alarm.custom_display:
+            display = await service.set_display(
+                power=False,
+                clock=False,
+                logo=False,
+                symbols=False,
+                brightness=alarm.night_display_brightness,
+                follow_lighting_dial=False,
+                raw_mode=False,
+            )
         return {
             "alarm_id": alarm.alarm_id,
             "prepared": True,
-            "brightness": alarm.start_brightness,
+            "brightness": 0,
             "light_rgb": alarm.light_rgb,
+            "display_brightness": alarm.night_display_brightness,
+            "clock_visible": False if alarm.custom_display else None,
+            "logo_visible": False if alarm.custom_display else None,
+            "symbols_visible": False if alarm.custom_display else None,
+            "display_acknowledged": (
+                display is None or display.get("acknowledged") is True
+            ),
             "clock_acknowledged": clock.get("acknowledged") is True,
             "classic_audio_touched": False,
             "bluetooth_disconnect_command_sent": False,
@@ -182,6 +248,7 @@ async def prepare_overnight(alarm: SunriseAlarm) -> dict[str, object]:
             os.environ["TZ"] = previous_timezone
         if hasattr(time, "tzset"):
             time.tzset()
+        _restore_environment(previous_environment)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -189,6 +256,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--alarm", required=True)
     parser.add_argument("--prepare", action="store_true")
+    parser.add_argument("--snoozed", action="store_true")
     return parser.parse_args()
 
 
@@ -201,6 +269,18 @@ def main() -> None:
         raise SystemExit(f"alarm {arguments.alarm!r} does not exist") from exc
     if arguments.prepare:
         asyncio.run(prepare_overnight(alarm))
+    elif arguments.snoozed:
+        fade = alarm.snooze_fade_minutes
+        asyncio.run(
+            run_alarm(
+                replace(
+                    alarm,
+                    sunrise_minutes=fade,
+                    audio_fade_minutes=fade,
+                    start_brightness=0,
+                )
+            )
+        )
     else:
         asyncio.run(run_alarm(alarm))
 

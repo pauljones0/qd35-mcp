@@ -31,6 +31,7 @@ The protocol is independently implemented from observed behavior and Edifier Con
 - Select LDAC off, 48/44.1 kHz, or 96 kHz
 - Rename, disconnect Bluetooth audio, power off, or factory-reset the speaker
 - Install persistent sunrise alarms that ramp light and speaker volume, play local audio or public internet radio, and keep paired Classic audio connected overnight
+- Turn the patched display and RGB fully off overnight, fade both toward wake time, cap bedside audio, and snooze without disconnecting Bluetooth
 
 The app's 32 built-in BGM tracks are audio files played by the phone, not stored speaker commands, so they are not redistributed. Firmware installation is intentionally excluded from the agent interface; the separately gated local installer accepts only the exact official 1.3.0 image and has a stock-restore mode.
 
@@ -123,6 +124,7 @@ Do not copy that example address unless it is your speaker.
 | `qd35_create_sunrise_alarm` | Install optional bedtime preparation plus timezone-aware, reboot-persistent sunrise/audio timers |
 | `qd35_run_alarm_now` | Start one installed alarm immediately |
 | `qd35_stop_alarm` | Stop current light/audio playback without disconnecting Bluetooth |
+| `qd35_snooze_alarm` | Stop audio, restore the fully dark night state, and restart with a short fade after 1–60 minutes |
 | `qd35_delete_alarm` | Remove an alarm and its user timer/service |
 | `qd35_set_alarm_audio_keepalive` | Enable or disable overnight Classic-audio reconnection |
 | `qd35_set_ldac` | Select `off`, `48khz`, or `96khz`; a change restarts Bluetooth |

@@ -13,19 +13,40 @@ On the tested QD35/BlueZ combination, a deliberate host-side disconnect changed 
 
 `qd35_create_sunrise_alarm` stores a mode-0600 JSON plan beneath the XDG state directory and installs systemd user services/timers beneath the XDG user-unit directory. The sunrise timer uses the alarm's IANA timezone and starts at `wake_time - sunrise_minutes`. When `bedtime` is supplied, a separate preparation timer runs on the preceding alarm night: for a Monday–Friday 07:00 wake alarm with bedtime 22:00, it fires Sunday–Thursday at 22:00. `Persistent=true` catches a missed firing after a reboot. The standalone runners work even after the MCP client that created the alarm exits.
 
-Bedtime preparation synchronizes the clock and applies the configured static RGB at `start_brightness`. It uses the BLE control channel only: it does not select the audio input, change volume, launch a player, or send a Classic Bluetooth command. The independently enabled keepalive maintains the existing Classic connection overnight.
+Bedtime preparation synchronizes the clock, sets the 37-node RGB chain to zero, and,
+when the optional display patch is configured, powers the complete front display
+off. The CMS1640 driver's minimum nonzero level (`0`) remained too bright at bedside
+distance, so the night state deliberately blanks the clock, EDIFIER logo, and other
+symbols. It uses
+the BLE control channel only: it does not select the audio input, change volume,
+launch a player, or send a Classic Bluetooth command. The independently enabled
+keepalive maintains the existing Classic connection overnight.
 
 During a run it:
 
 1. Synchronizes the speaker clock and requested 12/24-hour display.
 2. Selects Bluetooth input without disconnecting Classic audio.
-3. Ramps a validated static RGB light from the start to end brightness.
-4. Connects the already-paired Classic endpoint when audio is due.
-5. Starts `mpv` on the QD35 PipeWire/PulseAudio sink.
-6. Ramps the speaker's hardware volume from zero to the requested target.
-7. Leaves a radio stream running until `qd35_stop_alarm` is called.
+3. Ramps a validated static RGB light from 0 to the configured end brightness.
+4. Ramps the patched front display from hardware level 0 to 7, restoring the logo
+   and status symbols at the beginning of the sunrise.
+5. Connects the already-paired Classic endpoint when audio is due.
+6. Starts `mpv` on the QD35 PipeWire/PulseAudio sink at 50% software gain.
+7. Ramps the speaker's hardware volume from zero to the requested target, which is
+   capped at 8/16; new alarms default to a bedside-safe 4/16.
+8. Leaves a radio stream running until `qd35_stop_alarm` or
+   `qd35_snooze_alarm` is called.
 
 Lighting-only alarms exit after the ramp. Audio alarms remain active while the player runs. Stopping an alarm terminates its service/player but does not send a Bluetooth disconnect command.
+
+## Snooze
+
+`qd35_snooze_alarm(alarm_id, minutes=10)` stops the active systemd service and its
+`mpv` child immediately, returns RGB to zero, and restores the fully dark night
+state. It installs a one-shot user timer for 1–60 minutes. When the
+timer fires, a dedicated snooze service performs a short two-minute RGB/front-display
+and radio-volume fade instead of replaying the entire 30-minute sunrise. The regular
+recurring alarm timer is unchanged, and neither snooze nor stop sends the speaker's
+Bluetooth-disconnect command.
 
 ## Audio sources
 
@@ -45,9 +66,9 @@ Station availability and personal-use terms remain the station operator's respon
 
 ```text
 Create “Weekday Wake” for 07:00 America/Regina, Monday through Friday.
-Set a dim warm-orange light at 22:00 the preceding night.
-Start a 30-minute sunrise at brightness 1, finish at 80,
-start Groove Salad during the final 10 minutes, and fade speaker volume to 8.
+Turn RGB and the front display off at 22:00, then start a
+30-minute warm-orange sunrise that reaches 100% at 08:00. Start Groove Salad during
+the final 10 minutes and fade the speaker only to bedside volume 4.
 ```
 
 The clock protocol returns only a success acknowledgement; it has no time readback. Audio requires the host to remain powered on with the user systemd manager, BlueZ, PipeWire, network, and `mpv` available.

@@ -11,7 +11,7 @@ import socket
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -56,6 +56,9 @@ class SunriseAlarm:
     classic_device: str
     enabled: bool
     created_at: str
+    custom_display: bool = False
+    night_display_brightness: int = 0
+    snooze_fade_minutes: int = 2
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> SunriseAlarm:
@@ -78,6 +81,9 @@ class SunriseAlarm:
             classic_device=str(value["classic_device"]),
             enabled=bool(value["enabled"]),
             created_at=str(value["created_at"]),
+            custom_display=bool(value.get("custom_display", False)),
+            night_display_brightness=int(value.get("night_display_brightness", 0)),
+            snooze_fade_minutes=int(value.get("snooze_fade_minutes", 2)),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -227,6 +233,12 @@ class SystemdUserTimers:
         return f"qd35-alarm-{alarm_id}.{suffix}"
 
     @staticmethod
+    def _snooze_unit_name(alarm_id: str, suffix: str) -> str:
+        if not _ID_PATTERN.fullmatch(alarm_id) or suffix not in {"service", "timer"}:
+            raise ValueError("invalid snooze unit identifier")
+        return f"qd35-alarm-{alarm_id}-snooze.{suffix}"
+
+    @staticmethod
     def _quoted(value: str) -> str:
         return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
@@ -272,6 +284,20 @@ class SystemdUserTimers:
         )
         (self.unit_dir / service_name).write_text(service, encoding="utf-8")
         (self.unit_dir / timer_name).write_text(timer, encoding="utf-8")
+        snooze_service_name = self._snooze_unit_name(alarm.alarm_id, "service")
+        snooze_service = (
+            "[Unit]\n"
+            f"Description=QD35 snoozed alarm: {alarm.name}\n"
+            "After=bluetooth.service pipewire.service\n\n"
+            "[Service]\n"
+            "Type=simple\n"
+            f"ExecStart={python} -m qd35_mcp.alarm_runner --state {state} "
+            f"--alarm {alarm_id} --snoozed\n"
+            "NoNewPrivileges=true\n"
+        )
+        (self.unit_dir / snooze_service_name).write_text(
+            snooze_service, encoding="utf-8"
+        )
         bedtime_calendar = bedtime_systemd_calendar(alarm)
         if bedtime_calendar is not None:
             prepare_service_name = self._unit_name(
@@ -355,11 +381,17 @@ class SystemdUserTimers:
         prepare_timer_name = self._unit_name(f"{alarm_id}-prepare", "timer")
         self._run("disable", "--now", prepare_timer_name, check=False)
         self._run("stop", prepare_service_name, check=False)
+        snooze_service_name = self._snooze_unit_name(alarm_id, "service")
+        snooze_timer_name = self._snooze_unit_name(alarm_id, "timer")
+        self._run("stop", snooze_timer_name, check=False)
+        self._run("stop", snooze_service_name, check=False)
         for name in (
             service_name,
             timer_name,
             prepare_service_name,
             prepare_timer_name,
+            snooze_service_name,
+            snooze_timer_name,
         ):
             path = self.unit_dir / name
             if path.exists():
@@ -371,6 +403,25 @@ class SystemdUserTimers:
 
     def stop(self, alarm_id: str) -> None:
         self._run("stop", self._unit_name(alarm_id, "service"), check=False)
+        self._run("stop", self._snooze_unit_name(alarm_id, "timer"), check=False)
+        self._run("stop", self._snooze_unit_name(alarm_id, "service"), check=False)
+
+    def snooze(self, alarm_id: str, minutes: int) -> None:
+        if not _ID_PATTERN.fullmatch(alarm_id) or not 1 <= minutes <= 60:
+            raise ValueError("snooze requires a valid alarm and 1-60 minutes")
+        self.stop(alarm_id)
+        timer_name = self._snooze_unit_name(alarm_id, "timer")
+        timer = (
+            "[Unit]\n"
+            f"Description=Snooze QD35 alarm {alarm_id}\n\n"
+            "[Timer]\n"
+            f"OnActiveSec={minutes}min\n"
+            "AccuracySec=1s\n"
+            f"Unit={self._snooze_unit_name(alarm_id, 'service')}\n"
+        )
+        (self.unit_dir / timer_name).write_text(timer, encoding="utf-8")
+        self._run("daemon-reload")
+        self._run("start", timer_name)
 
     def state(self, alarm_id: str) -> dict[str, object]:
         timer = self._unit_name(alarm_id, "timer")
@@ -387,6 +438,14 @@ class SystemdUserTimers:
                     check=False,
                 ).stdout.strip()
                 == "enabled"
+            ),
+            "snooze_active": (
+                self._run(
+                    "is-active",
+                    self._snooze_unit_name(alarm_id, "timer"),
+                    check=False,
+                ).stdout.strip()
+                == "active"
             ),
         }
 
@@ -457,8 +516,8 @@ class AlarmManager:
             raise ValueError("clock_format must be preserve, 12h, or 24h")
         if not 0 <= audio_fade_minutes <= sunrise_minutes:
             raise ValueError("audio_fade_minutes must be between 0 and sunrise_minutes")
-        if not 0 <= target_speaker_volume <= 16:
-            raise ValueError("target_speaker_volume must be between 0 and 16")
+        if not 0 <= target_speaker_volume <= 8:
+            raise ValueError("target_speaker_volume must be between 0 and 8 for bedside safety")
         source = validate_audio_source(audio_source, self.config)
         await self.service.set_timezone(timezone, sync_now=False)
         status = await self.service.status()
@@ -486,6 +545,9 @@ class AlarmManager:
             classic_device=classic,
             enabled=True,
             created_at=datetime.now(UTC).isoformat(),
+            custom_display=self.config.custom_display_firmware,
+            night_display_brightness=0,
+            snooze_fade_minutes=2,
         )
         alarms = self.store.load()
         previous = alarms.get(alarm_id)
@@ -564,3 +626,40 @@ class AlarmManager:
         normalized = normalize_alarm_id(alarm_id)
         await asyncio.to_thread(self.timers.stop, normalized)
         return {"alarm_id": normalized, "stopped": True, "bluetooth_disconnected": False}
+
+    async def snooze(self, alarm_id: str, minutes: int = 10) -> dict[str, object]:
+        normalized = normalize_alarm_id(alarm_id)
+        alarms = self.store.load()
+        if normalized not in alarms:
+            raise ValueError(f"alarm {normalized!r} does not exist")
+        if not 1 <= minutes <= 60:
+            raise ValueError("snooze minutes must be between 1 and 60")
+        await asyncio.to_thread(self.timers.snooze, normalized, minutes)
+        alarm = alarms[normalized]
+        light = await self.service.set_light(
+            effect="static",
+            rgb=alarm.light_rgb,
+            brightness=0,
+        )
+        display: dict[str, object] | None = None
+        if alarm.custom_display:
+            display = await self.service.set_display(
+                power=False,
+                clock=False,
+                logo=False,
+                symbols=False,
+                brightness=alarm.night_display_brightness,
+                follow_lighting_dial=False,
+                raw_mode=False,
+            )
+        return {
+            "alarm_id": normalized,
+            "snoozed": True,
+            "minutes": minutes,
+            "resume_at": (datetime.now(UTC) + timedelta(minutes=minutes)).isoformat(),
+            "night_light_applied": light.get("applied") is True,
+            "night_display_acknowledged": (
+                display is None or display.get("acknowledged") is True
+            ),
+            "bluetooth_disconnected": False,
+        }

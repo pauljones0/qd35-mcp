@@ -28,6 +28,7 @@ def alarm(**changes: object) -> SunriseAlarm:
         classic_device="AA:BB:CC:DD:EE:FF",
         enabled=True,
         created_at="2026-11-17T00:00:00+00:00",
+        custom_display=True,
     )
     return replace(value, **changes)
 
@@ -38,6 +39,7 @@ class FakeService:
         self.inputs: list[str] = []
         self.lights: list[dict[str, object]] = []
         self.volumes: list[int] = []
+        self.displays: list[dict[str, object]] = []
         self.disconnected = False
 
     async def sync_clock(self, value: str, timezone: str) -> dict[str, object]:
@@ -61,6 +63,10 @@ class FakeService:
         self.volumes.append(value)
         return {"applied": True}
 
+    async def set_display(self, **values: object) -> dict[str, object]:
+        self.displays.append(values)
+        return {"acknowledged": True}
+
     async def disconnect(self) -> None:
         self.disconnected = True
 
@@ -75,6 +81,7 @@ async def test_runner_completes_lighting_alarm_without_audio(
         "alarm_id": "test",
         "completed": True,
         "brightness": 80,
+        "display_brightness": 7,
         "speaker_volume": None,
         "audio_started": False,
         "bluetooth_disconnected": False,
@@ -82,6 +89,7 @@ async def test_runner_completes_lighting_alarm_without_audio(
     assert service.clock_formats == ["12h"]
     assert service.inputs == ["bluetooth"]
     assert service.lights[-1]["brightness"] == 80
+    assert service.displays[-1]["brightness"] == 7
     assert service.disconnected is True
 
 
@@ -92,11 +100,25 @@ async def test_bedtime_preparation_sets_low_light_without_classic_audio(
     monkeypatch.setattr(alarm_runner, "create_service", lambda: service)
     result = await alarm_runner.prepare_overnight(alarm(start_brightness=3))
     assert result["prepared"] is True
-    assert result["brightness"] == 3
+    assert result["brightness"] == 0
+    assert result["display_brightness"] == 0
+    assert result["clock_visible"] is False
+    assert result["logo_visible"] is False
     assert result["classic_audio_touched"] is False
     assert result["bluetooth_disconnect_command_sent"] is False
     assert service.inputs == []
     assert service.volumes == []
     assert service.lights == [
-        {"effect": "static", "rgb": "#FF6A20", "brightness": 3}
+        {"effect": "static", "rgb": "#FF6A20", "brightness": 0}
+    ]
+    assert service.displays == [
+        {
+            "power": False,
+            "clock": False,
+            "logo": False,
+            "symbols": False,
+            "brightness": 0,
+            "follow_lighting_dial": False,
+            "raw_mode": False,
+        }
     ]
