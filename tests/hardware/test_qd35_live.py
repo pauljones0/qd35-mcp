@@ -39,6 +39,10 @@ async def test_live_identity_and_state_shape() -> None:
         assert status["lighting"]["group"] == 1
         assert {effect["id"] for effect in status["lighting"]["effects"]} == set(range(1, 8))
         assert isinstance(status["playback"]["playing"], bool)
+        assert status["capabilities"]["rename"]["max_utf8_bytes"] == 35
+        assert status["capabilities"]["eq_profile"] == 12
+        assert status["audio_status"]["value"] >= 0
+        assert set(status["custom_light"]) == {"asset_id", "detail", "palette_key"}
     finally:
         await service.disconnect()
 
@@ -89,6 +93,11 @@ async def test_live_reversible_control_matrix() -> None:
             target = -0.5 if band["gain_db"] >= 0 else 0.5
             assert (await service.set_eq_band(band["index"], target))["applied"] is True
             assert (await service.set_eq_band(band["index"], band["gain_db"]))["applied"] is True
+        await service.set_eq_band(0, -0.5)
+        assert (await service.reset_eq())["applied"] is True
+        for band in original["custom_eq"]["bands"]:
+            assert (await service.set_eq_band(band["index"], band["gain_db"]))["applied"] is True
+        assert (await service.set_eq_preset(original["eq_preset"]["name"]))["applied"] is True
 
         for effect, effect_id in c.LIGHT_EFFECTS.items():
             kwargs: dict[str, object] = {
@@ -103,7 +112,11 @@ async def test_live_reversible_control_matrix() -> None:
                 kwargs["speed"] = 1
             assert (await service.set_light(**kwargs))["applied"] is True
 
-        assert (await service.rename("QD35 MCP TEST"))["applied"] is True
+        reset = await service.reset_light("static")
+        assert reset["sent"] is True
+        assert reset["effect_id"] == c.LIGHT_EFFECTS["static"]
+
+        assert (await service.rename("Q" * 35))["applied"] is True
         assert (await service.rename(original["name"]))["applied"] is True
         clock = await service.sync_clock("preserve")
         assert clock["acknowledged"] is True
@@ -111,5 +124,38 @@ async def test_live_reversible_control_matrix() -> None:
     finally:
         try:
             await restore()
+        finally:
+            await service.disconnect()
+
+
+async def test_live_custom_light_transfer() -> None:
+    if not all(
+        enabled(name)
+        for name in (
+            "QD35_HARDWARE_WRITES",
+            "QD35_ENABLE_WRITES",
+            "QD35_HARDWARE_CUSTOM_LIGHTS",
+        )
+    ):
+        pytest.skip(
+            "set QD35_HARDWARE_WRITES=1, QD35_ENABLE_WRITES=1, and "
+            "QD35_HARDWARE_CUSTOM_LIGHTS=1"
+        )
+
+    service = create_service()
+    original = await service.status()
+    try:
+        result = await service.apply_custom_light("spiral", palette_key=1)
+        assert result["applied"] is True
+        assert result["chunks_uploaded"] == 1
+        assert result["custom_light_after"] == {
+            "asset_id": 1,
+            "detail": 1,
+            "palette_key": 1,
+        }
+        assert result["activated"] is True
+    finally:
+        try:
+            await service.set_light(effect=original["lighting"]["selected_effect"])
         finally:
             await service.disconnect()

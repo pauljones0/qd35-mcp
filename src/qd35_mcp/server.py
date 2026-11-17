@@ -70,6 +70,19 @@ def create_server(service: QD35Service | None = None) -> MCPServer:
         """Read the device capability bytes and report the MCP's supported and excluded actions."""
         return await call(service.capabilities)
 
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
+    async def qd35_get_events(
+        since_sequence: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=256)] = 100,
+    ) -> dict[str, object]:
+        """Return retained BLE notifications, including media metadata and state changes."""
+        return await call(service.events, since_sequence, limit)
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
+    async def qd35_list_custom_lights() -> dict[str, object]:
+        """List the official firmware-1.3.0 custom animations and palette keys."""
+        return await call(service.custom_light_catalog)
+
     @server.tool(
         annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
     )
@@ -108,6 +121,13 @@ def create_server(service: QD35Service | None = None) -> MCPServer:
         return await call(service.set_eq_band, band, gain_db)
 
     @server.tool(
+        annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False, openWorldHint=False)
+    )
+    async def qd35_reset_eq() -> dict[str, object]:
+        """Reset all custom EQ bands with opcode 0x45 and verify the resulting band state."""
+        return await call(service.reset_eq)
+
+    @server.tool(
         annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
     )
     async def qd35_set_light(
@@ -129,6 +149,45 @@ def create_server(service: QD35Service | None = None) -> MCPServer:
     ) -> dict[str, object]:
         """Change lighting with effect-specific RGB or named color modes."""
         return await call(service.set_light, effect, rgb, color_mode, brightness, speed, enabled)
+
+    @server.tool(
+        annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False, openWorldHint=False)
+    )
+    async def qd35_reset_light(
+        effect: Literal[
+            "ambient",
+            "magic_tides",
+            "shooting_star",
+            "breathing",
+            "tempo_emo",
+            "static",
+            "extended",
+        ]
+        | None = None,
+    ) -> dict[str, object]:
+        """Reset the selected (or named) lighting effect using the app's opcode 0x72."""
+        return await call(service.reset_light, effect)
+
+    @server.tool(
+        annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
+    )
+    async def qd35_set_light_timer(
+        index: Annotated[int, Field(ge=0, le=255)],
+        value: Annotated[int, Field(ge=0, le=255)],
+    ) -> dict[str, object]:
+        """Set the app-defined light timer only when the speaker advertises that capability."""
+        return await call(service.set_light_timer, index, value)
+
+    @server.tool(
+        annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=True)
+    )
+    async def qd35_apply_custom_light(
+        preset: Literal["gradient", "water_drop", "spiral", "multicolored"],
+        palette_key: Annotated[int | None, Field(ge=1, le=11)] = None,
+        activate: bool = True,
+    ) -> dict[str, object]:
+        """Download a hash-pinned Edifier animation, upload it, and optionally select Extended."""
+        return await call(service.apply_custom_light, preset, palette_key, activate)
 
     @server.tool(
         annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False, openWorldHint=False)
@@ -161,7 +220,7 @@ def create_server(service: QD35Service | None = None) -> MCPServer:
         annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
     )
     async def qd35_rename_device(name: str) -> dict[str, object]:
-        """Rename the speaker using 1-24 UTF-8 bytes and verify by readback."""
+        """Rename the speaker using its D8-advertised UTF-8 byte limit and verify by readback."""
         return await call(service.rename, name)
 
     @server.tool(

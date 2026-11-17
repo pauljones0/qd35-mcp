@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from .. import constants as c
 from ..errors import DeviceNotFound, OutcomeUnknown
-from .base import DeviceCandidate, Transport
+from .base import DeviceCandidate, DeviceEvent, Transport
 
 
 class FakeTransport(Transport):
@@ -33,6 +35,7 @@ class FakeTransport(Transport):
 
     def __init__(self) -> None:
         self._connected = False
+        self._session = 0
         self.powered = True
         self.audio_connected = True
         self.volume = 6
@@ -44,12 +47,22 @@ class FakeTransport(Transport):
         self.last_media_action: int | None = None
         self.playback_state = 3
         self.last_clock_payload: bytes | None = None
+        self.audio_status = 1
+        self.custom_light_status = (0, 0)
+        self.custom_light_transfer: bytearray | None = None
+        self.custom_light_id = 0
+        self.custom_light_palette = 0
+        self.custom_light_sequences: set[int] = set()
+        self.custom_light_bytes_written = 0
+        self.light_timer = (0, 0)
         self.name = "EDIFIER QD35 (simulated)"
         self.firmware = bytes((1, 3, 0))
         self.light_group = 1
         self.light_selected = 4
         self.light_records = self._default_light_records()
         self.bands = self._default_bands()
+        self._events: list[DeviceEvent] = []
+        self._event_sequence = 0
         self.device = DeviceCandidate(
             address="FA:CE:D3:50:00:01",
             name=self.name,
@@ -64,6 +77,10 @@ class FakeTransport(Transport):
     def connected(self) -> bool:
         return self._connected
 
+    @property
+    def connection_identity(self) -> tuple[str, int] | None:
+        return (self.device.address, self._session) if self._connected else None
+
     async def discover(self, timeout: float) -> list[DeviceCandidate]:
         return [self.device] if self.powered else []
 
@@ -72,11 +89,30 @@ class FakeTransport(Transport):
             raise DeviceNotFound("simulated speaker is powered off")
         if device and device not in {self.device.address, "fake"}:
             raise DeviceNotFound(f"simulated device {device!r} does not exist")
-        self._connected = True
+        if not self._connected:
+            self._session += 1
+            self._connected = True
         return self.device
 
     async def disconnect(self) -> None:
         self._connected = False
+
+    async def prepare_large_write(self, minimum_size: int) -> int:
+        if not self._connected:
+            await self.connect()
+        return 509
+
+    def _emit(self, opcode: int, payload: bytes) -> None:
+        self._event_sequence += 1
+        self._events.append(
+            DeviceEvent(
+                sequence=self._event_sequence,
+                session=1,
+                observed_at=datetime.now().astimezone().isoformat(),
+                opcode=opcode,
+                payload=payload,
+            )
+        )
 
     async def send(self, opcode: int, payload: bytes = b"") -> None:
         if not self.powered:
@@ -89,6 +125,7 @@ class FakeTransport(Transport):
                 self.playback_state = 0x0D
             elif payload[0] == c.MEDIA_ACTIONS["pause"]:
                 self.playback_state = 3
+            self._emit(c.QUERY_PLAYBACK, bytes((self.playback_state,)))
 
     async def request(self, opcode: int, payload: bytes = b"", timeout: float = 4) -> bytes:
         if not self.powered:
@@ -116,15 +153,59 @@ class FakeTransport(Transport):
             index = payload[0]
             self.bands[index] = list(payload[:6])
             return bytes((1,))
+        if opcode == c.RESET_EQ:
+            self.bands = self._default_bands()
+            return b"\x01"
         if opcode == c.QUERY_LIGHT:
             records = b"".join(bytes(record) for record in self.light_records.values())
             return bytes((self.light_group, self.light_selected)) + records
+        if opcode == c.QUERY_AUDIO_STATUS:
+            return bytes((self.audio_status,))
+        if opcode == c.QUERY_CUSTOM_LIGHT:
+            return bytes(self.custom_light_status)
+        if opcode == c.START_CUSTOM_LIGHT_TRANSFER:
+            self.custom_light_id = payload[0]
+            self.custom_light_palette = payload[1] if len(payload) > 1 else 0
+            self.custom_light_transfer = bytearray()
+            self.custom_light_sequences = set()
+            self.custom_light_bytes_written = 0
+            return bytes.fromhex("01030000009b00010000")
+        if opcode == c.PROCESS_CUSTOM_LIGHT_TRANSFER:
+            if self.custom_light_transfer is None:
+                return b"\x01\x00"
+            sequence = payload[2]
+            if sequence not in self.custom_light_sequences:
+                self.custom_light_transfer.extend(payload[5:-2])
+                self.custom_light_sequences.add(sequence)
+                self.custom_light_bytes_written += len(payload[5:-2])
+            return bytes((0, sequence - 1))
+        if opcode == c.FINISH_CUSTOM_LIGHT_TRANSFER:
+            if payload == b"\x01" and self.custom_light_transfer is not None:
+                self.custom_light_status = (
+                    self.custom_light_id,
+                    self.custom_light_palette,
+                )
+                self.custom_light_transfer = None
+                return b"\x01"
+            self.custom_light_transfer = None
+            return b"\x01"
+        if opcode == c.QUERY_LIGHT_TIMER:
+            return bytes(self.light_timer)
+        if opcode == c.SET_LIGHT_TIMER:
+            self.light_timer = (payload[0], payload[1])
+            return bytes(self.light_timer)
         if opcode == c.SET_LIGHT:
             self.light_group, self.light_selected = payload[:2]
             self.light_records[self.light_selected] = list(payload[1:])
             for record in self.light_records.values():
                 record[4] = payload[5]
             return payload
+        if opcode == c.RESET_LIGHT:
+            self.light_group, self.light_selected = payload[:2]
+            self.light_records = self._default_light_records()
+            return bytes((self.light_group, self.light_selected)) + b"".join(
+                bytes(record) for record in self.light_records.values()
+            )
         if opcode == c.QUERY_LDAC:
             return bytes((self.ldac,))
         if opcode == c.QUERY_PLAYBACK:
@@ -132,7 +213,9 @@ class FakeTransport(Transport):
         if opcode == c.SET_LDAC:
             self.ldac = payload[0]
             self._connected = False
-            raise OutcomeUnknown("simulated Bluetooth restart after LDAC change")
+            raise OutcomeUnknown(
+                "simulated Bluetooth restart after LDAC change", connection_dropped=True
+            )
         if opcode == c.QUERY_FIRMWARE:
             return self.firmware
         if opcode == c.QUERY_NAME:
@@ -172,3 +255,14 @@ class FakeTransport(Transport):
             self._connected = False
             return b"\x01"
         return b""
+
+    async def events(self, since_sequence: int = 0, limit: int = 100) -> dict[str, object]:
+        selected = [event for event in self._events if event.sequence > since_sequence][:limit]
+        return {
+            "events": [event.to_dict() for event in selected],
+            "count": len(selected),
+            "latest_sequence": self._event_sequence,
+            "more": False,
+            "dropped_before_retention": 0,
+            "note": "simulated event stream",
+        }

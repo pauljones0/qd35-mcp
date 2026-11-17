@@ -18,10 +18,36 @@ class DeviceCandidate:
         return asdict(self)
 
 
+@dataclass(frozen=True, slots=True)
+class DeviceEvent:
+    sequence: int
+    session: int
+    observed_at: str
+    opcode: int | None
+    payload: bytes
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "sequence": self.sequence,
+            "session": self.session,
+            "observed_at": self.observed_at,
+            "opcode": self.opcode,
+            "opcode_hex": f"0x{self.opcode:02X}" if self.opcode is not None else None,
+            "payload_hex": self.payload.hex(),
+            "error": self.error,
+        }
+
+
 class Transport(ABC):
     @property
     @abstractmethod
     def connected(self) -> bool: ...
+
+    @property
+    @abstractmethod
+    def connection_identity(self) -> tuple[str, int] | None:
+        """Return the current physical target and connection-session generation."""
 
     @abstractmethod
     async def discover(self, timeout: float) -> list[DeviceCandidate]: ...
@@ -38,3 +64,11 @@ class Transport(ABC):
 
     @abstractmethod
     async def request(self, opcode: int, payload: bytes = b"", timeout: float = 4) -> bytes: ...
+
+    @abstractmethod
+    async def events(self, since_sequence: int = 0, limit: int = 100) -> dict[str, object]:
+        """Return retained notifications without initiating any Bluetooth operation."""
+
+    @abstractmethod
+    async def prepare_large_write(self, minimum_size: int) -> int:
+        """Establish and return a validated one-write ATT payload capacity."""

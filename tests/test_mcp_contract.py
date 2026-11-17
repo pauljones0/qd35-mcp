@@ -52,6 +52,8 @@ async def test_real_stdio_server_contract() -> None:
             names = {tool.name for tool in tools.tools}
             assert "qd35_get_status" in names
             assert "qd35_set_light" in names
+            assert "qd35_apply_custom_light" in names
+            assert "qd35_get_events" in names
             assert "qd35_factory_reset" in names
 
             by_name = {tool.name: tool for tool in tools.tools}
@@ -92,9 +94,12 @@ async def test_real_stdio_server_contract() -> None:
             successful_calls = [
                 ("qd35_discover", {}),
                 ("qd35_get_capabilities", {}),
+                ("qd35_get_events", {}),
+                ("qd35_list_custom_lights", {}),
                 ("qd35_set_input", {"source": "usb"}),
                 ("qd35_set_eq_preset", {"preset": "movie"}),
                 ("qd35_set_eq_band", {"band": 0, "gain_db": 0.5}),
+                ("qd35_reset_eq", {}),
                 (
                     "qd35_set_light",
                     {"effect": "static", "rgb": "#123456", "brightness": 40},

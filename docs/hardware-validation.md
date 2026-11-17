@@ -13,7 +13,7 @@ The advertisement has no local name, which explains why a name-based initial sca
 
 ## Read validation
 
-Successful queries: capability block, firmware, name, Classic address, volume, input, EQ preset, six DIY bands, lighting group/effects, LDAC, playback status, audio status, and custom-light status. An app media-info event also arrived unsolicited, confirming the request matcher must ignore unrelated opcodes.
+Successful queries: capability block, firmware, name, Classic address, volume, input, EQ preset, six DIY bands, lighting group/effects, LDAC, playback status, audio status, and custom-light status. An unsolicited media-info event (`50 00 00 00`) arrived after another query, proving that unrelated opcodes must be retained separately rather than discarded by request matching.
 
 ## Changed-value write validation
 
@@ -26,14 +26,31 @@ the physical speaker:
 | Input `62` | Bluetooth → AUX → USB → Bluetooth; every delayed readback matched |
 | EQ preset `C4` | Music, Game, Movie, and DIY all selected; final Music restoration matched |
 | EQ band `44` | All six bands changed to -0.5 dB, read back with DIY active, and restored to 0.0 dB |
+| EQ reset `45` | Six modified bands reset to defaults; original bands and Music preset were restored |
 | Lighting `6B` | All seven effects exercised with their real RGB/named-mode shape, brightness, and supported speeds; 18 changed/restored readbacks matched |
-| Rename `CA` | `EDIFIER QD35` → `QD35 MCP TEST` → `EDIFIER QD35`; both readbacks matched |
+| Lighting reset `72` | Modified static parameters changed after reset; original parameters and selected breathing effect were restored |
+| Rename `CA` | `EDIFIER QD35` → an exact 35-ASCII-byte boundary name → `EDIFIER QD35`; both readbacks matched |
 | Clock `77` | Preserve, 12-hour, and 24-hour synchronization returned `01`; no independent clock readback exists |
 | LDAC `49` | 48/44.1 kHz and 96 kHz were each confirmed by post-restart `48` readback, then restored off |
 
 The final status confirmed volume 10, Bluetooth input, Music EQ, the original six EQ
 gains, breathing effect, every original lighting color/mode and speed, 100% brightness,
 the original device name, and LDAC off. Classic audio was connected afterward.
+
+## Extended/custom-light transfer
+
+The transfer implementation was exercised with two official product-223/firmware-1.3.0 assets:
+
+| Asset | Live result |
+|---|---|
+| Spiral | 150 bytes, one acknowledged chunk; `78` readback returned compatibility asset ID `01` and palette `01`; Extended activated successfully |
+| Gradient | 14,550 bytes, 97 acknowledged chunks; `78` readback returned asset ID `17` hex (catalog ID 23); Extended activated successfully |
+
+`79` returned transfer limit 155 and capacity 15,360 bytes. The resulting 150-byte data chunks are wrapped in 163-byte v2 frames. Live `7A` acknowledgements used zero-based detail indexes: chunk sequences 1 and 2 returned `00 00` and `00 01`, and the repeated Gradient validation ended at detail 96 for sequence 97. The first live attempt exposed a real transport bug: Bleak's characteristic write limit remained cached at 20 bytes even after BlueZ negotiated MTU 512, so the frame was split and the speaker never acknowledged it. A deep dive checked the negotiated MTU, characteristic properties, raw write geometry, and app behavior before accepting the timeout. The transport now negotiates and verifies enough ATT capacity before `79`, sends the 163-byte frame in one write, correlates every acknowledgement, and refuses an unvalidated fragmented fallback; both transfers then completed.
+
+Lost-ack retry behavior was also tested directly rather than inferred from the simulator. The exact Spiral sequence-1 frame was deliberately submitted twice. Firmware 1.3.0 returned the same successful `00 00` acknowledgement both times, accepted `7B 01`, and `78` reported asset `01` with palette `01`. This confirms that retransmitting an already accepted sequence is idempotent on the tested QD35. Gradient was then uploaded again and breathing restored.
+
+The original custom slot was empty. After validation, the visible lighting effect and its parameters were restored to breathing. Gradient remains installed but inactive because `78` identifies an asset plus a detail/palette byte; it cannot read back an arbitrary prior binary for backup.
 
 ## Media control
 
@@ -86,7 +103,7 @@ Classic A2DP remained active.
 
 ## Safety and remaining validation
 
-Firmware update remains excluded because a failed OTA can brick hardware and is not needed for ordinary agent control.
+Firmware 1.3.0 is the version reported by this speaker and the version used by Edifier's current QD35 custom-light catalog. The app exposes OTA only when it has a signed, model-specific image; no newer QD35 image was established during this work. Firmware update remains excluded because the recovered opcode names do not establish image format, integrity validation, rollback, or recovery, and a failed OTA can brick the speaker.
 
 Run unit/simulator checks with `uv run pytest`. Hardware tests are intentionally manual because they operate a real nearby speaker.
 

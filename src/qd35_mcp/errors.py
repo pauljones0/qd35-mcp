@@ -1,6 +1,10 @@
 class QD35Error(Exception):
     """Base class for expected QD35 errors."""
 
+    def __init__(self, message: str, *, connection_dropped: bool | None = None) -> None:
+        super().__init__(message)
+        self.connection_dropped = connection_dropped
+
 
 class DeviceNotFound(QD35Error):
     pass
@@ -19,7 +23,7 @@ class TransportError(QD35Error):
 
 
 class OutcomeUnknown(QD35Error):
-    """The connection dropped after a write, so physical outcome needs readback."""
+    """A write was attempted but its physical outcome needs independent readback."""
 
 
 class WritesDisabled(QD35Error):

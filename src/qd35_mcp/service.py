@@ -8,22 +8,34 @@ from typing import Any
 
 from . import constants as c
 from .config import Config
+from .custom_lights import fetch_custom_light_asset, list_custom_lights
 from .errors import (
     DangerousWritesDisabled,
     OutcomeUnknown,
     ProtocolError,
     QD35Error,
+    RequestTimeout,
     WritesDisabled,
 )
 from .protocol import (
     parse_address,
+    parse_audio_status,
+    parse_capabilities,
+    parse_custom_light_finish,
+    parse_custom_light_progress,
+    parse_custom_light_start,
+    parse_custom_light_status,
     parse_eq,
     parse_eq_preset,
     parse_firmware,
     parse_input,
     parse_ldac,
     parse_light,
+    parse_light_setting,
+    parse_light_timer,
+    parse_media_info,
     parse_playback,
+    parse_text_event,
     parse_volume,
 )
 from .transport.base import Transport
@@ -35,7 +47,15 @@ def serialized_mutation(method: Any) -> Any:
     @wraps(method)
     async def wrapped(self: QD35Service, *args: object, **kwargs: object) -> object:
         async with self._mutation_lock:
-            return await method(self, *args, **kwargs)
+            self._transaction_active = True
+            self._transaction_identity = None
+            self._transaction_mutated = False
+            try:
+                return await method(self, *args, **kwargs)
+            finally:
+                self._transaction_active = False
+                self._transaction_identity = None
+                self._transaction_mutated = False
 
     return wrapped
 
@@ -45,26 +65,112 @@ class QD35Service:
         self.transport = transport
         self.config = config
         self._mutation_lock = asyncio.Lock()
+        self._connected_device: dict[str, object] | None = None
+        self._verified_identity: tuple[str, int] | None = None
+        self._transaction_active = False
+        self._transaction_identity: tuple[str, int] | None = None
+        self._transaction_mutated = False
 
     async def discover(self, timeout: float | None = None) -> dict[str, object]:
         timeout_value = self.config.scan_timeout if timeout is None else timeout
         if not 0 < timeout_value <= 300:
             raise ValueError("timeout must be greater than 0 and at most 300 seconds")
-        devices = await self.transport.discover(timeout_value)
+        async with self._mutation_lock:
+            devices = await self.transport.discover(timeout_value)
         return {"devices": [device.to_dict() for device in devices], "count": len(devices)}
 
     async def ensure_connected(self) -> dict[str, object]:
         device = await self.transport.connect(self.config.device)
-        return device.to_dict()
+        result = device.to_dict()
+        if self._verified_identity != self.transport.connection_identity:
+            self._verified_identity = None
+        self._connected_device = result
+        return result
 
     async def disconnect(self) -> dict[str, object]:
-        await self.transport.disconnect()
+        async with self._mutation_lock:
+            await self.transport.disconnect()
         return {"connected": False}
 
     async def _request(self, opcode: int, payload: bytes = b"") -> bytes:
         if not self.transport.connected:
-            await self.transport.connect(self.config.device)
+            if self._transaction_active and self._transaction_identity is not None:
+                error = (
+                    OutcomeUnknown
+                    if self._transaction_mutated
+                    else ProtocolError
+                )
+                raise error(
+                    "Bluetooth session changed during one semantic transaction; "
+                    "refusing to reconnect and continue on a possibly different speaker"
+                )
+            await self.ensure_connected()
+        identity = self.transport.connection_identity
+        if identity is None:
+            raise ProtocolError("Bluetooth transport has no active connection identity")
+        if self._transaction_active:
+            if self._transaction_identity is None:
+                self._transaction_identity = identity
+            elif identity != self._transaction_identity:
+                error = OutcomeUnknown if self._transaction_mutated else ProtocolError
+                raise error(
+                    "Bluetooth target/session changed during one semantic transaction; "
+                    "refusing to continue"
+                )
+        if opcode in c.MUTATING_OPCODES and self._verified_identity != identity:
+            await self._verify_qd35_target()
+            if self.transport.connection_identity != identity:
+                raise ProtocolError("Bluetooth session changed while verifying the QD35 target")
+        if opcode in c.MUTATING_OPCODES and self._transaction_active:
+            self._transaction_mutated = True
         return await self.transport.request(opcode, payload, self.config.request_timeout)
+
+    async def _verify_qd35_target(self) -> dict[str, object]:
+        """Establish model-specific evidence before the first physical write."""
+        identity = self.transport.connection_identity
+        if self._verified_identity is not None and self._verified_identity == identity:
+            return {"verified": True, "address": identity[0], "cached": True}
+        if not self.transport.connected:
+            await self.ensure_connected()
+        identity = self.transport.connection_identity
+        if identity is None:
+            raise ProtocolError("Bluetooth transport has no active connection identity")
+        name = (await self.transport.request(
+            c.QUERY_NAME, timeout=self.config.request_timeout
+        )).decode("utf-8", "replace")
+        capabilities = parse_capabilities(
+            await self.transport.request(c.QUERY_CAPABILITIES, timeout=self.config.request_timeout)
+        )
+        evidence: dict[str, object] = {"name": name, "capabilities": capabilities}
+        source = parse_input(
+            await self.transport.request(c.QUERY_INPUT, timeout=self.config.request_timeout)
+        )
+        volume = parse_volume(
+            await self.transport.request(c.QUERY_VOLUME, timeout=self.config.request_timeout)
+        )
+        lighting = parse_light(
+            await self.transport.request(c.QUERY_LIGHT, timeout=self.config.request_timeout)
+        )
+        evidence.update(
+            {"input": source, "volume": volume, "lighting_group": lighting["group"]}
+        )
+        fingerprint_match = (
+            capabilities["eq_profile"] == 12
+            and capabilities["skin_profile"] == 10
+            and source["group"] == 2
+            and volume["maximum"] == 16
+            and lighting["group"] == 1
+            and any(record["id"] == 7 for record in lighting["effects"])
+        )
+        if not fingerprint_match:
+            raise ProtocolError(
+                "The selected Edifier A400 device could not be verified as a QD35; "
+                "refusing to write"
+            )
+        if self.transport.connection_identity != identity:
+            raise ProtocolError("Bluetooth session changed while verifying the QD35 target")
+        self._verified_identity = identity
+        return {"verified": True, "address": identity[0], "evidence": evidence}
 
     def _write_allowed(self, dangerous: bool = False) -> None:
         if not self.config.writes_enabled:
@@ -77,7 +183,20 @@ class QD35Service:
             )
 
     async def status(self) -> dict[str, object]:
+        async with self._mutation_lock:
+            self._transaction_active = True
+            self._transaction_identity = None
+            self._transaction_mutated = False
+            try:
+                return await self._status_locked()
+            finally:
+                self._transaction_active = False
+                self._transaction_identity = None
+                self._transaction_mutated = False
+
+    async def _status_locked(self) -> dict[str, object]:
         device = await self.ensure_connected()
+        self._transaction_identity = self.transport.connection_identity
 
         async def read(opcode: int, parser: Any) -> object:
             try:
@@ -85,6 +204,7 @@ class QD35Service:
             except QD35Error as exc:
                 return {"unavailable": True, "error": str(exc)}
 
+        capabilities = await read(c.QUERY_CAPABILITIES, parse_capabilities)
         volume = await read(c.QUERY_VOLUME, parse_volume)
         source = await read(c.QUERY_INPUT, parse_input)
         eq_preset = await read(c.QUERY_EQ_PRESET, parse_eq_preset)
@@ -95,8 +215,22 @@ class QD35Service:
         firmware = await read(c.QUERY_FIRMWARE, parse_firmware)
         name = await read(c.QUERY_NAME, lambda value: value.decode("utf-8", "replace"))
         address = await read(c.QUERY_ADDRESS, parse_address)
+        audio_status = await read(c.QUERY_AUDIO_STATUS, parse_audio_status)
+        custom_light = await read(c.QUERY_CUSTOM_LIGHT, parse_custom_light_status)
+        light_timer: object = {
+            "unavailable": True,
+            "unsupported": True,
+            "error": "D8 does not advertise ambient-light timer support",
+        }
+        if (
+            isinstance(capabilities, dict)
+            and isinstance(capabilities.get("supported"), dict)
+            and capabilities["supported"].get("light_timer")
+        ):
+            light_timer = await read(c.QUERY_LIGHT_TIMER, parse_light_timer)
         return {
             "device": device,
+            "capabilities": capabilities,
             "name": name,
             "firmware": firmware,
             "classic_address": address,
@@ -107,21 +241,29 @@ class QD35Service:
             "lighting": lighting,
             "ldac": ldac,
             "playback": playback,
+            "audio_status": audio_status,
+            "custom_light": custom_light,
+            "light_timer": light_timer,
             "observed_at": datetime.now().astimezone().isoformat(),
         }
 
     async def capabilities(self) -> dict[str, object]:
-        raw = await self._request(c.QUERY_CAPABILITIES)
+        async with self._mutation_lock:
+            raw = await self._request(c.QUERY_CAPABILITIES)
+            decoded = parse_capabilities(raw)
         return {
             "model": "Edifier QD35",
-            "raw_d8": raw.hex(),
-            "observed_firmware": "1.3.0",
+            "device_capabilities": decoded,
             "supported_tools": [
                 "status",
                 "volume",
                 "input: bluetooth/aux/usb",
                 "EQ presets and six DIY bands",
                 "seven live-reported lighting effects, RGB, brightness and effect speed",
+                "lighting reset and capability-gated light timer",
+                "official Extended/custom-light animation transfer",
+                "audio decoding status and custom-light status",
+                "retained raw and parsed notification events",
                 "media play/pause/next/previous",
                 "clock sync and 12/24-hour format",
                 "LDAC off/48 kHz/96 kHz",
@@ -142,6 +284,39 @@ class QD35Service:
             },
         }
 
+    async def events(self, since_sequence: int = 0, limit: int = 100) -> dict[str, object]:
+        result = await self.transport.events(since_sequence, limit)
+        parsed_events: list[dict[str, object]] = []
+        parsers: dict[int, Any] = {
+            c.QUERY_VOLUME: parse_volume,
+            c.QUERY_INPUT: parse_input,
+            c.QUERY_EQ_PRESET: parse_eq_preset,
+            c.QUERY_LIGHT: parse_light,
+            c.SET_LIGHT: parse_light_setting,
+            c.RESET_LIGHT: parse_light,
+            c.QUERY_PLAYBACK: parse_playback,
+            c.MEDIA_INFO: parse_media_info,
+            c.MEDIA_TITLE_EVENT: parse_text_event,
+            c.MEDIA_ARTIST_EVENT: parse_text_event,
+            c.QUERY_AUDIO_STATUS: parse_audio_status,
+            c.QUERY_CUSTOM_LIGHT: parse_custom_light_status,
+            c.QUERY_LIGHT_TIMER: parse_light_timer,
+        }
+        for event in result["events"]:
+            item = dict(event)
+            opcode = item.get("opcode")
+            payload_hex = item.get("payload_hex")
+            if isinstance(opcode, int) and opcode in parsers and isinstance(payload_hex, str):
+                try:
+                    item["parsed"] = parsers[opcode](bytes.fromhex(payload_hex))
+                except QD35Error as exc:
+                    item["parse_error"] = str(exc)
+            parsed_events.append(item)
+        return {**result, "events": parsed_events}
+
+    async def custom_light_catalog(self) -> dict[str, object]:
+        return list_custom_lights()
+
     @serialized_mutation
     async def set_volume(self, level: int) -> dict[str, object]:
         self._write_allowed()
@@ -149,7 +324,10 @@ class QD35Service:
         if not 0 <= level <= current["maximum"]:
             raise ValueError(f"level must be between 0 and {current['maximum']}")
         await self._request(c.SET_VOLUME, bytes((level,)))
-        result = parse_volume(await self._request(c.QUERY_VOLUME))
+        try:
+            result = parse_volume(await self._request(c.QUERY_VOLUME))
+        except QD35Error as exc:
+            return self._unknown_after_write("set_volume", exc, ["volume_write"])
         return {"applied": result["current"] == level, "volume": result}
 
     @serialized_mutation
@@ -166,12 +344,15 @@ class QD35Service:
         # asynchronously (observed at 0.75-1.25 seconds). Poll bounded readback
         # so a successful change is not reported as a false negative.
         result = current
-        for attempt in range(9):
-            result = parse_input(await self._request(c.QUERY_INPUT))
-            if result["name"] == source:
-                break
-            if attempt < 8:
-                await asyncio.sleep(0.25)
+        try:
+            for attempt in range(9):
+                result = parse_input(await self._request(c.QUERY_INPUT))
+                if result["name"] == source:
+                    break
+                if attempt < 8:
+                    await asyncio.sleep(0.25)
+        except QD35Error as exc:
+            return self._unknown_after_write("set_input", exc, ["input_write"])
         return {"applied": result["name"] == source, "input": result}
 
     @serialized_mutation
@@ -181,7 +362,10 @@ class QD35Service:
         if preset not in c.EQ_PRESETS:
             raise ValueError(f"preset must be one of: {', '.join(c.EQ_PRESETS)}")
         await self._request(c.SET_EQ_PRESET, bytes((c.EQ_PRESETS[preset],)))
-        result = parse_eq_preset(await self._request(c.QUERY_EQ_PRESET))
+        try:
+            result = parse_eq_preset(await self._request(c.QUERY_EQ_PRESET))
+        except QD35Error as exc:
+            return self._unknown_after_write("set_eq_preset", exc, ["preset_write"])
         return {"applied": result["name"] == preset, "eq_preset": result}
 
     @serialized_mutation
@@ -198,12 +382,17 @@ class QD35Service:
         gain_code = int(gain_db * 2 + 6)
         payload = bytes((band, 0, frequency >> 8, frequency & 0xFF, gain_code, int(record["q"])))
         await self._request(c.SET_EQ, payload)
-        await self._request(c.SET_EQ_PRESET, bytes((c.EQ_PRESETS["diy"],)))
-        result = parse_eq(await self._request(c.QUERY_EQ))
-        updated = next((item for item in result["bands"] if item["index"] == band), None)
-        if updated is None:
-            raise ProtocolError(f"EQ readback omitted band {band}")
-        active_preset = parse_eq_preset(await self._request(c.QUERY_EQ_PRESET))
+        completed_steps = ["band_write"]
+        try:
+            await self._request(c.SET_EQ_PRESET, bytes((c.EQ_PRESETS["diy"],)))
+            completed_steps.append("diy_preset_write")
+            result = parse_eq(await self._request(c.QUERY_EQ))
+            updated = next((item for item in result["bands"] if item["index"] == band), None)
+            if updated is None:
+                raise ProtocolError(f"EQ readback omitted band {band}")
+            active_preset = parse_eq_preset(await self._request(c.QUERY_EQ_PRESET))
+        except QD35Error as exc:
+            return self._unknown_after_write("set_eq_band", exc, completed_steps)
         band_applied = (
             updated["gain_db"] == gain_db
             and updated["frequency_hz"] == frequency
@@ -213,6 +402,30 @@ class QD35Service:
             "applied": band_applied and active_preset["name"] == "diy",
             "band": updated,
             "active_preset": active_preset,
+        }
+
+    @serialized_mutation
+    async def reset_eq(self) -> dict[str, object]:
+        self._write_allowed()
+        before = parse_eq(await self._request(c.QUERY_EQ))
+        response = await self._request(c.RESET_EQ)
+        try:
+            after = parse_eq(await self._request(c.QUERY_EQ))
+        except QD35Error as exc:
+            return self._unknown_after_write("reset_eq", exc, ["reset_write"])
+        expected_band_count = before["band_count"]
+        reset_applied = (
+            expected_band_count == 6
+            and after["band_count"] == expected_band_count
+            and len(after["bands"]) == expected_band_count
+            and all(band["gain_db"] == 0 for band in after["bands"])
+        )
+        return {
+            "sent": True,
+            "acknowledgement_hex": response.hex(),
+            "applied": reset_applied,
+            "changed": before != after,
+            "custom_eq": after,
         }
 
     @staticmethod
@@ -250,6 +463,11 @@ class QD35Service:
                 raise ValueError(f"{current['name']} uses rgb, not color_mode")
             red, green, blue = tuple(current["raw_color"]) if rgb is None else self._rgb(rgb)
         else:
+            if effect_id not in c.LIGHT_COLOR_MODES:
+                raise ProtocolError(
+                    f"firmware selected unknown lighting effect {effect_id}; only raw state "
+                    "can be preserved safely"
+                )
             if rgb is not None:
                 allowed = ", ".join(c.LIGHT_COLOR_MODES[effect_id])
                 raise ValueError(f"{current['name']} uses color_mode ({allowed}), not rgb")
@@ -284,10 +502,15 @@ class QD35Service:
             (state["group"], effect_id, red, green, blue, target_brightness, wire_speed)
         )
         await self._request(c.SET_LIGHT, payload)
-        result = parse_light(await self._request(c.QUERY_LIGHT))
-        selected = next((item for item in result["effects"] if item["id"] == effect_id), None)
-        if selected is None:
-            raise ProtocolError(f"lighting readback omitted requested effect {effect_id}")
+        try:
+            result = parse_light(await self._request(c.QUERY_LIGHT))
+            selected = next(
+                (item for item in result["effects"] if item["id"] == effect_id), None
+            )
+            if selected is None:
+                raise ProtocolError(f"lighting readback omitted requested effect {effect_id}")
+        except QD35Error as exc:
+            return self._unknown_after_write("set_light", exc, ["lighting_write"])
         applied = (
             result["group"] == state["group"]
             and result["selected_effect_id"] == effect_id
@@ -304,6 +527,8 @@ class QD35Service:
         if action not in c.MEDIA_ACTIONS:
             raise ValueError(f"action must be one of: {', '.join(c.MEDIA_ACTIONS)}")
         before = parse_playback(await self._request(c.QUERY_PLAYBACK))
+        if self._verified_identity != self.transport.connection_identity:
+            await self._verify_qd35_target()
         await self.transport.send(c.MEDIA_CONTROL, bytes((c.MEDIA_ACTIONS[action],)))
         await asyncio.sleep(0.1)
         try:
@@ -348,13 +573,41 @@ class QD35Service:
         clock_format = clock_format.strip().lower()
         if clock_format not in {"preserve", "12h", "24h"}:
             raise ValueError("clock_format must be preserve, 12h, or 24h")
+        capabilities = parse_capabilities(await self._request(c.QUERY_CAPABILITIES))
+        support = capabilities["supported"]
+        if not support["clock_hms_format"] and not support["clock_unix_seconds"]:
+            raise ProtocolError("D8 does not advertise a supported clock synchronization dialect")
+        if support["clock_unix_seconds"] and not support["clock_hms_format"]:
+            if clock_format != "preserve":
+                raise ValueError(
+                    "this firmware's Unix-seconds clock dialect cannot select 12h/24h format"
+                )
+            now = datetime.now().astimezone()
+            payload = int(now.timestamp()).to_bytes(4, "big")
+            response = await self._request(c.SYNC_CLOCK, payload)
+            if response != b"\x01":
+                raise ProtocolError(
+                    f"clock sync returned unexpected response {response.hex() or '<empty>'}"
+                )
+            return {
+                "sent": True,
+                "acknowledged": True,
+                "applied": None,
+                "time": now.isoformat(),
+                "format": "preserve",
+                "dialect": "unix_seconds",
+                "response": response.hex(),
+                "attempts": 1,
+                "verification": "speaker returned success; this protocol has no clock readback",
+            }
         for attempt in range(1, 3):
             now = datetime.now().astimezone()
             if clock_format == "preserve":
                 payload = bytes((now.hour, now.minute, now.second, 0))
             elif clock_format == "12h":
-                hour = now.hour % 12 or 12
-                payload = bytes((hour, now.minute, now.second, 1, 1 if now.hour >= 12 else 0))
+                payload = bytes(
+                    (now.hour, now.minute, now.second, 1, 1 if now.hour >= 12 else 0)
+                )
             else:
                 payload = bytes((now.hour, now.minute, now.second, 2, 1 if now.hour >= 12 else 0))
             response = await self._request(c.SYNC_CLOCK, payload)
@@ -365,6 +618,7 @@ class QD35Service:
                     "applied": None,
                     "time": now.isoformat(),
                     "format": clock_format,
+                    "dialect": "hour_minute_second_format",
                     "response": response.hex(),
                     "attempts": attempt,
                     "verification": "speaker returned success; this protocol has no clock readback",
@@ -381,6 +635,9 @@ class QD35Service:
         mode = mode.strip().lower()
         if mode not in c.LDAC_MODES:
             raise ValueError(f"mode must be one of: {', '.join(c.LDAC_MODES)}")
+        capabilities = parse_capabilities(await self._request(c.QUERY_CAPABILITIES))
+        if not capabilities["supported"]["ldac"]:
+            raise ProtocolError("D8 does not advertise LDAC preference support")
         expected = c.LDAC_MODES[mode]
         before = parse_ldac(await self._request(c.QUERY_LDAC))
         if before["value"] == expected:
@@ -390,20 +647,31 @@ class QD35Service:
                 "bluetooth_restarted": False,
                 "ldac": before,
             }
+        mutation_sent = False
         try:
+            await self._verify_qd35_target()
+            mutation_sent = True
             await self._request(c.SET_LDAC, bytes((expected,)))
             # Some firmware acknowledges before its Bluetooth stack restarts.
             await asyncio.sleep(0.25)
             result = parse_ldac(await self._request(c.QUERY_LDAC))
             return {"applied": result["value"] == expected, "changed": True, "ldac": result}
-        except QD35Error:
+        except QD35Error as exc:
+            observed_disconnect = (
+                exc.connection_dropped
+                if exc.connection_dropped is not None
+                else None
+            )
             await self.transport.disconnect()
             return {
                 "applied": None,
-                "changed": True,
-                "bluetooth_restarted": True,
+                "changed": None,
+                "mutation_sent": mutation_sent,
+                "bluetooth_restarted": True if observed_disconnect is True else None,
+                "connection_dropped": observed_disconnect,
                 "requested_mode": mode,
                 "outcome": "unknown_until_reconnected",
+                "error": str(exc),
                 "suggested_action": (
                     "Reconnect Classic audio, then call qd35_get_status to verify LDAC. "
                     "If the old bond is rejected, remove it from the host and pair again."
@@ -417,14 +685,344 @@ class QD35Service:
         if any(ord(character) < 32 or ord(character) == 127 for character in normalized):
             raise ValueError("name must not contain control characters")
         encoded = normalized.encode("utf-8")
-        if not encoded or len(encoded) > 24:
-            raise ValueError("name must be 1 to 24 UTF-8 bytes")
+        capabilities = parse_capabilities(await self._request(c.QUERY_CAPABILITIES))
+        rename_capability = capabilities["rename"]
+        maximum = rename_capability["max_utf8_bytes"]
+        if maximum is None:
+            raise ProtocolError("D8 does not advertise device rename support")
+        if rename_capability["packaged_write"]:
+            raise ProtocolError(
+                "this rename mode requires app-style packaged writes that are not "
+                "verified for QD35; refusing an unpackaged rename"
+            )
+        if not encoded or len(encoded) > maximum:
+            raise ValueError(f"name must be 1 to {maximum} UTF-8 bytes")
         await self._request(c.SET_NAME, encoded)
-        result = (await self._request(c.QUERY_NAME)).decode("utf-8", "replace")
-        return {"applied": result == normalized, "name": result}
+        try:
+            result = (await self._request(c.QUERY_NAME)).decode("utf-8", "replace")
+        except QD35Error as exc:
+            return {
+                "applied": None,
+                "requested_name": normalized,
+                "outcome": "unknown_until_reconnected",
+                "bluetooth_restarted": (
+                    True
+                    if rename_capability["reboots_bluetooth"] and not self.transport.connected
+                    else None
+                ),
+                "error": str(exc),
+            }
+        return {
+            "applied": result == normalized,
+            "name": result,
+            "max_utf8_bytes": maximum,
+            "packaged_write_required_by_app": rename_capability["packaged_write"],
+        }
+
+    @serialized_mutation
+    async def reset_light(self, effect: str | None = None) -> dict[str, object]:
+        self._write_allowed()
+        before = parse_light(await self._request(c.QUERY_LIGHT))
+        effect_id = before["selected_effect_id"]
+        if effect is not None:
+            normalized = effect.strip().lower()
+            if normalized not in c.LIGHT_EFFECTS:
+                raise ValueError(f"effect must be one of: {', '.join(c.LIGHT_EFFECTS)}")
+            effect_id = c.LIGHT_EFFECTS[normalized]
+        response = await self._request(c.RESET_LIGHT, bytes((before["group"], effect_id)))
+        try:
+            after = parse_light(await self._request(c.QUERY_LIGHT))
+        except QD35Error as exc:
+            return self._unknown_after_write("reset_light", exc, ["reset_write"])
+        return {
+            "sent": True,
+            "acknowledgement_hex": response.hex(),
+            "effect_id": effect_id,
+            "lighting": after,
+            "changed": before != after,
+            "verification": "state was queried after the APK-defined reset command",
+        }
+
+    @serialized_mutation
+    async def set_light_timer(self, index: int, value: int) -> dict[str, object]:
+        self._write_allowed()
+        if not 0 <= index <= 255 or not 0 <= value <= 255:
+            raise ValueError("index and value must each be between 0 and 255")
+        capabilities = parse_capabilities(await self._request(c.QUERY_CAPABILITIES))
+        if not capabilities["supported"]["light_timer"]:
+            raise ProtocolError("D8 does not advertise ambient-light timer support")
+        await self._request(c.SET_LIGHT_TIMER, bytes((index, value)))
+        try:
+            result = parse_light_timer(await self._request(c.QUERY_LIGHT_TIMER))
+        except QD35Error as exc:
+            return self._unknown_after_write("set_light_timer", exc, ["timer_write"])
+        return {"applied": result == {"index": index, "value": value}, "light_timer": result}
+
+    @staticmethod
+    def _unknown_after_write(
+        operation: str, exc: QD35Error, completed_steps: list[str]
+    ) -> dict[str, object]:
+        return {
+            "applied": None,
+            "outcome": "unknown_after_write",
+            "operation": operation,
+            "completed_steps": completed_steps,
+            "verification_failed": True,
+            "error": str(exc),
+            "retry_automatically": False,
+        }
+
+    @serialized_mutation
+    async def apply_custom_light(
+        self,
+        preset: str,
+        palette_key: int | None = None,
+        activate: bool = True,
+    ) -> dict[str, object]:
+        """Download a hash-pinned official animation and upload it using 79/7A/7B."""
+        self._write_allowed()
+        preset = preset.strip().lower().replace("-", "_")
+        capabilities = parse_capabilities(await self._request(c.QUERY_CAPABILITIES))
+        if not capabilities["supported"]["lighting"]:
+            raise ProtocolError("D8 does not advertise ambient lighting support")
+        await self._verify_qd35_target()
+        firmware = parse_firmware(await self._request(c.QUERY_FIRMWARE))
+        if firmware != "1.3.0":
+            raise ProtocolError(
+                f"official custom-light assets are verified only for QD35 firmware 1.3.0, "
+                f"not {firmware}"
+            )
+        lighting_before = parse_light(await self._request(c.QUERY_LIGHT))
+        if lighting_before["group"] != 1 or not any(
+            record["id"] == 7 for record in lighting_before["effects"]
+        ):
+            raise ProtocolError("speaker does not report QD35 group 1 Extended lighting")
+        custom_before = parse_custom_light_status(await self._request(c.QUERY_CUSTOM_LIGHT))
+        asset, data = await asyncio.to_thread(fetch_custom_light_asset, preset, palette_key)
+        write_capacity = await self.transport.prepare_large_write(163)
+        if self.transport.connection_identity != self._transaction_identity:
+            raise ProtocolError("Bluetooth session changed during custom-light MTU preparation")
+        start_id = asset.start_asset_id or asset.asset_id
+        start_payload = bytes((start_id,))
+        if palette_key is not None:
+            start_payload += bytes((palette_key,))
+        start: dict[str, object] | None = None
+        chunk_count = 0
+        completed_chunks = 0
+        acknowledgement_details: list[int] = []
+        start_submitted = False
+        try:
+            start_submitted = True
+            start = parse_custom_light_start(
+                await self._request(c.START_CUSTOM_LIGHT_TRANSFER, start_payload)
+            )
+            transfer_limit = int(start["transfer_limit"])
+            chunk_size = transfer_limit - 5
+            if not 1 <= chunk_size <= 507:
+                raise ProtocolError(
+                    f"speaker returned invalid custom-light transfer limit {transfer_limit}"
+                )
+            required_frame_size = chunk_size + 13
+            if required_frame_size > write_capacity:
+                raise ProtocolError(
+                    f"custom-light frame needs {required_frame_size} bytes but negotiated "
+                    f"ATT capacity is {write_capacity}"
+                )
+            if len(data) > int(start["device_size"]):
+                raise ProtocolError(
+                    f"animation is {len(data)} bytes but speaker reports "
+                    f"{start['device_size']} bytes"
+                )
+            chunk_count = (len(data) + chunk_size - 1) // chunk_size
+            if chunk_count > 255:
+                raise ProtocolError(
+                    f"transfer needs {chunk_count} chunks but the sequence field is one byte"
+                )
+            for sequence in range(1, chunk_count + 1):
+                offset = (sequence - 1) * chunk_size
+                chunk = data[offset : offset + chunk_size].ljust(chunk_size, b"\x00")
+                payload = bytes((asset.light_type, 7, sequence, 0, 37)) + chunk + b"\x00\x00"
+                progress: dict[str, object] | None = None
+                acknowledged = False
+                for attempt in range(10):
+                    try:
+                        progress = parse_custom_light_progress(
+                            await self._request(c.PROCESS_CUSTOM_LIGHT_TRANSFER, payload)
+                        )
+                    except RequestTimeout:
+                        if attempt == 9:
+                            raise ProtocolError(
+                                f"custom-light chunk {sequence} timed out ten times"
+                            ) from None
+                        continue
+                    detail = int(progress["detail"])
+                    if progress["success"] and detail != sequence - 1:
+                        # A delayed acknowledgement for the preceding chunk must not
+                        # advance this sequence. Live QD35 replies use a zero-based
+                        # chunk index here (00 for sequence 1, 01 for sequence 2).
+                        continue
+                    if progress["success"]:
+                        acknowledgement_details.append(detail)
+                        acknowledged = True
+                        break
+                if progress is None or not acknowledged:
+                    raise ProtocolError(
+                        f"speaker rejected custom-light chunk {sequence} ten times"
+                    )
+                completed_chunks = sequence
+            finish = parse_custom_light_finish(
+                await self._request(c.FINISH_CUSTOM_LIGHT_TRANSFER, b"\x01")
+            )
+            if not finish["success"]:
+                raise ProtocolError(
+                    f"custom-light completion failed with status {finish['status']}"
+                )
+        except asyncio.CancelledError:
+            if start_submitted:
+                await asyncio.shield(self._best_effort_custom_light_abort())
+            raise
+        except QD35Error as exc:
+            aborted = await self._best_effort_custom_light_abort() if start_submitted else False
+            return {
+                "applied": None,
+                "outcome": "unknown",
+                "preset": preset,
+                "completed_chunks": completed_chunks,
+                "total_chunks": chunk_count,
+                "abort_acknowledged": aborted,
+                "connection_dropped": (
+                    exc.connection_dropped
+                    if isinstance(exc, OutcomeUnknown)
+                    else not self.transport.connected
+                ),
+                "error": str(exc),
+                "retry_automatically": False,
+            }
+        await asyncio.sleep(0.5)
+        try:
+            custom_after = parse_custom_light_status(
+                await self._request(c.QUERY_CUSTOM_LIGHT)
+            )
+        except QD35Error as exc:
+            return {
+                "applied": None,
+                "outcome": "transfer_completed_but_readback_failed",
+                "preset": preset,
+                "palette_key": palette_key,
+                "bytes_uploaded": len(data),
+                "chunks_uploaded": completed_chunks,
+                "completion_acknowledged": True,
+                "activation_requested": activate,
+                "activated": None,
+                "custom_light_before": custom_before,
+                "error": str(exc),
+                "retry_automatically": False,
+            }
+        installed = custom_after["asset_id"] == start_id and (
+            palette_key is None or custom_after["palette_key"] == palette_key
+        )
+        try:
+            lighting_after = parse_light(await self._request(c.QUERY_LIGHT))
+            extended = next(
+                (record for record in lighting_after["effects"] if record["id"] == 7),
+                None,
+            )
+            if extended is None:
+                raise ProtocolError("lighting readback omitted Extended effect 7")
+            if activate and installed and (
+                lighting_after["selected_effect_id"] != 7
+                or extended["raw_color"] != [1, 0, 0]
+                or extended["brightness"] == 0
+            ):
+                payload = bytes(
+                    (
+                        lighting_after["group"],
+                        7,
+                        1,
+                        0,
+                        0,
+                        extended["brightness"] or 100,
+                        extended["wire_speed"],
+                    )
+                )
+                await self._request(c.SET_LIGHT, payload)
+                lighting_after = parse_light(await self._request(c.QUERY_LIGHT))
+        except QD35Error as exc:
+            return {
+                "applied": installed,
+                "preset": preset,
+                "palette_key": palette_key,
+                "asset_sha256": asset.sha256,
+                "bytes_uploaded": len(data),
+                "chunks_uploaded": completed_chunks,
+                "completion_acknowledged": True,
+                "custom_light_before": custom_before,
+                "custom_light_after": custom_after,
+                "activation_requested": activate,
+                "activated": None,
+                "activation_outcome": "unknown_after_install",
+                "error": str(exc),
+                "retry_automatically": False,
+            }
+        extended_after = next(
+            (record for record in lighting_after["effects"] if record["id"] == 7), None
+        )
+        activated = bool(
+            installed
+            and extended_after is not None
+            and lighting_after["selected_effect_id"] == 7
+            and extended_after["raw_color"] == [1, 0, 0]
+            and extended_after["brightness"] > 0
+        )
+        return {
+            "applied": installed,
+            "preset": preset,
+            "palette_key": palette_key,
+            "asset_sha256": asset.sha256,
+            "bytes_uploaded": len(data),
+            "chunks_uploaded": completed_chunks,
+            "transfer": start,
+            "chunk_ack_details": acknowledgement_details,
+            "all_chunk_acks_sequence_correlated": all(
+                detail == sequence - 1
+                for sequence, detail in enumerate(acknowledgement_details, start=1)
+            ),
+            "custom_light_before": custom_before,
+            "custom_light_after": custom_after,
+            "activated": activated,
+            "lighting": lighting_after,
+            "verification": (
+                "0x78 verifies asset identity/palette; firmware does not return the "
+                "installed binary"
+            ),
+        }
+
+    async def _best_effort_custom_light_abort(self) -> bool:
+        if not self.transport.connected:
+            return False
+        try:
+            result = parse_custom_light_finish(
+                await self.transport.request(
+                    c.FINISH_CUSTOM_LIGHT_TRANSFER,
+                    b"\x02",
+                    self.config.request_timeout,
+                )
+            )
+            return bool(result["success"])
+        except QD35Error:
+            return False
 
     async def _disruptive(self, opcode: int, operation: str) -> dict[str, object]:
         self._write_allowed(dangerous=True)
+        capability_by_opcode = {
+            c.POWER_OFF: "power_off",
+            c.DISCONNECT_AUDIO: "disconnect_audio",
+            c.FACTORY_RESET: "factory_reset",
+        }
+        capability = capability_by_opcode[opcode]
+        capabilities = parse_capabilities(await self._request(c.QUERY_CAPABILITIES))
+        if not capabilities["supported"][capability]:
+            raise ProtocolError(f"D8 does not advertise {operation} support")
         try:
             response = await self._request(opcode)
             if response != b"\x01":
@@ -432,12 +1030,18 @@ class QD35Service:
                     f"{operation} returned unexpected response {response.hex() or '<empty>'}"
                 )
             return {"sent": True, "operation": operation, "response": response.hex()}
-        except OutcomeUnknown:
+        except OutcomeUnknown as exc:
+            observed_disconnect = (
+                exc.connection_dropped
+                if exc.connection_dropped is not None
+                else not self.transport.connected
+            )
             return {
                 "sent": True,
                 "operation": operation,
-                "connection_dropped": True,
-                "outcome": "expected_disconnect; verify physically or rediscover",
+                "connection_dropped": observed_disconnect,
+                "outcome": "unknown; verify physically or rediscover",
+                "error": str(exc),
             }
 
     @serialized_mutation

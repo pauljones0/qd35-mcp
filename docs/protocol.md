@@ -42,7 +42,9 @@ Captured from a physical speaker identified by `C9` as `EDIFIER QD35`:
 | `C6` firmware | `01 03 00` | 1.3.0 |
 | `C8` address | six bytes | Classic audio address |
 | `C9` name | UTF-8 | `EDIFIER QD35` |
-| `D8` capability block | 22 bytes | raw value retained in `qd35_get_capabilities` |
+| `D8` capability block | `0000010401010100000001010a0c0a00002004830401` | 22-byte, length-aware capability block; raw bytes and unknown bits are retained |
+| `68` audio status | `00` while idle | raw value plus the app-confirmed QCM, Hi-Res, line Hi-Res, 192 kHz, and HWA logo combination |
+| `78` custom light | two bytes | installed Extended asset ID and detail byte; values 1–11 map to palette keys, while other observed values remain raw |
 
 Implemented request/setter pairs. Definitions are app-confirmed. Changed-value volume,
 input, EQ preset, EQ band, lighting, LDAC, rename, and clock operations were observed
@@ -55,7 +57,12 @@ tracked separately in `hardware-validation.md`:
 | Input | `61` | `62` | group `02`, Bluetooth `01`, AUX `02`, USB `03` |
 | EQ preset | `D5` | `C4` | Music `00`, Game `01`, Movie `02`, DIY `03` |
 | EQ band | `43` | `44` | index, `00`, frequency BE16, gain code, Q |
+| EQ reset | — | `45` | empty; query `43` afterward |
 | Lighting | `6A` | `6B` | group, effect, three effect-specific color bytes, global brightness, wire speed |
+| Lighting reset | — | `72` | group, effect; response parses as lighting state |
+| Light timer | `69` | `70` | index, value; gated by D8 byte 19 bit 3 |
+| Custom-light state | `78` | — | installed asset ID and optional palette key |
+| Custom-light transfer | — | `79`, `7A`, `7B` | start, acknowledged chunks, complete/abort |
 | LDAC | `48` | `49` | off `00`, 48 kHz `01`, 96 kHz `02` |
 | Clock | — | `77` | time and format, capability-dependent |
 | Media | `C3` | `C2` (one-way) | play `00`, pause `01`, next `04`, previous `05` |
@@ -63,6 +70,8 @@ tracked separately in `hardware-validation.md`:
 | Disconnect | — | `CD` | empty |
 | Power off | — | `CE` | empty |
 | Factory reset | — | `07` | empty |
+
+The live D8 block decodes to rename mode 4 (35 UTF-8 bytes, no packaged write), EQ profile 12, UI skin 10, and support for name/address/firmware queries, disconnect, shutdown, reset, LDAC, input, volume, ambient lighting, audio-decoding status, and the hour/minute/second clock dialect. It does not advertise the no-audio auto-shutdown, shutdown timer, separate light-color setting, or lighting timer bits. Byte 19 bit 4 is version-sensitive: app 8.4.33 treats set as media-info support, while 8.5.5 treats clear as support; the live clear bit therefore does not mean metadata is absent, and a `50` event was observed. Capability parsing is length-aware, treats byte 4 as the 8.5.5 bit field, and preserves trailing or unknown data instead of assuming a fixed 22-byte format.
 
 QD35 group-1 color bytes are effect-specific. Ambient and magic-tides use first-byte
 values `01` light and `02` deep, followed by two zero bytes. Shooting-star, breathing,
@@ -74,6 +83,28 @@ means the effect has no speed control.
 Playback query `C3` returns one byte. The official app treats `0D` as playing and other
 observed values (for example `03`) as not playing. It can verify play/pause state but
 does not prove that a next/previous command changed tracks.
+
+For the live hour/minute/second clock dialect, the hour byte remains the host's 0–23 hour for both display formats. Choosing 12-hour display appends format `01` and an AM/PM byte; it does not convert the hour byte to 1–12. Choosing 24-hour display appends format `02`.
+
+## Extended/custom-light transfer
+
+Custom animations are assets inside ordinary effect `07` (Extended), not additional `6B` effect IDs. For QD35 product 223 and firmware 1.3.0, Edifier's catalog provides Gradient (asset 23/type 1), Water-drop (24/type 1), Spiral (25/type 3, but start ID 1 due to the app compatibility patch), and Multicolored (26/type 2).
+
+The transfer sequence is:
+
+```text
+78 read current identity
+79 <start_asset_id> [palette_key]
+   reply: version[3], unresolved byte, transfer_limit_BE16, capacity_BE32
+7A TYPE 07 SEQUENCE 00 25 DATA[transfer_limit-5] 00 00
+   reply: status 00 advances; otherwise retry the same sequence and offset
+7B 01 complete (7B 02 aborts)
+78 verify installed identity, then optionally select Extended with 6B
+```
+
+The app requests ATT MTU 512 and waits two seconds before the first chunk. On the live QD35, `79` reported limit 155 and capacity 15,360, producing 150-byte application chunks and 163-byte frames. Sequence numbers start at 1. Matching the app, negative replies and lost acknowledgements retry the identical sequence and file offset, bounded at ten attempts. This was verified live by sending the exact same accepted Spiral sequence-1 frame twice: both replies were successful with detail `00`, completion succeeded, and `78` reported the intended asset and palette. The receiver therefore treats a repeated sequence idempotently on tested firmware 1.3.0. The second live acknowledgement byte is the zero-based chunk index (`00` for sequence 1, `01` for sequence 2), so stale acknowledgements cannot advance a later chunk. The implementation refuses to begin unless one ATT write can carry the complete live frame, because fragmented delivery failed on the tested QD35. Each official binary is composed of 150-byte records: a two-byte big-endian timing/control value followed by 37 four-byte light entries. The fourth component is preserved but intentionally left unnamed because the official assets keep it at zero and its physical meaning is not established.
+
+Official downloads use a fixed Edifier HTTPS allowlist, a one-megabyte bound, pinned SHA-256 values, and structural validation before transfer. The palette transform multiplies each of the first three components by the selected palette component and floors the result after division by 255; the first two bytes and fourth component are preserved.
 
 ## Evidence discipline
 

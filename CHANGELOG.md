@@ -15,4 +15,15 @@
 - Effect-specific QD35 lighting controls, including named modes and global brightness behavior.
 - Live changed-value/readback/restoration across every EQ band, every lighting effect, and LDAC
   96 kHz; clock and media results now distinguish acknowledgement from independent readback.
+- Length-aware D8 capability decoding, device-fingerprint verification before writes, and the
+  firmware-advertised 35-byte rename limit.
+- Retained, bounded notification history with strict media/title/artist event parsing.
+- Audio-decoding and custom-light status, custom EQ reset, per-effect lighting reset, and a
+  capability-gated lighting timer surface.
+- Hash-pinned official Extended-animation transfers with palette support, negotiated MTU and
+  chunk geometry, acknowledgements, bounded retries, abort handling, and identity readback.
+- Live one-chunk Spiral and 97-chunk Gradient transfers, exact-boundary rename, EQ reset, and
+  lighting reset validation against firmware 1.3.0.
+- Live duplicate-sequence validation confirming custom-light lost-ack retries are idempotent on
+  firmware 1.3.0, followed by successful Gradient and visible-light restoration.
 

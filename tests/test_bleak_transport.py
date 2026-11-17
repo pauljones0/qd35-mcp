@@ -6,6 +6,7 @@ import pytest
 
 from qd35_mcp import constants as c
 from qd35_mcp.errors import OutcomeUnknown, ProtocolError, RequestTimeout, TransportError
+from qd35_mcp.transport import bleak as bleak_module
 from qd35_mcp.transport.base import DeviceCandidate
 from qd35_mcp.transport.bleak import BleakTransport
 
@@ -172,6 +173,61 @@ async def test_one_way_send_does_not_wait_for_notification(
     assert MockClient.instances[0].writes[0][5] == 1
 
 
+async def test_large_frame_uses_negotiated_mtu_despite_stale_characteristic_limit(
+    transport: BleakTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await transport.connect()
+    client = MockClient.instances[0]
+    characteristic = SimpleNamespace(max_write_without_response_size=20)
+    client.services = SimpleNamespace(get_characteristic=lambda _uuid: characteristic)
+    client.mtu_size = 23
+
+    class Backend:
+        async def _acquire_mtu(self) -> None:
+            client.mtu_size = 512
+
+    client._backend = Backend()
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(bleak_module.asyncio, "sleep", no_sleep)
+    packet = bytes(range(163))
+    await transport._write_packet_locked(packet)
+    assert client.mtu_size == 512
+    assert client.writes == [packet]
+    assert transport._mtu_ready is True
+
+
+async def test_large_frame_refuses_unvalidated_fragmentation(
+    transport: BleakTransport,
+) -> None:
+    await transport.connect()
+    client = MockClient.instances[0]
+    client.services = SimpleNamespace(
+        get_characteristic=lambda _uuid: SimpleNamespace(max_write_without_response_size=20)
+    )
+    client.mtu_size = 23
+
+    class Backend:
+        async def _acquire_mtu(self) -> None:
+            raise OSError("MTU negotiation denied")
+
+    client._backend = Backend()
+    with pytest.raises(TransportError, match="MTU negotiation failed"):
+        await transport._write_packet_locked(bytes(range(163)))
+    assert client.writes == []
+
+
+async def test_custom_chunk_timeout_keeps_session_for_same_chunk_retry(
+    transport: BleakTransport,
+) -> None:
+    with pytest.raises(RequestTimeout, match="same chunk may retry"):
+        await transport.request(c.PROCESS_CUSTOM_LIGHT_TRANSFER, b"chunk", timeout=0.01)
+    assert transport.connected is True
+    assert len(MockClient.instances) == 1
+
+
 async def test_mutating_write_failure_is_unknown_and_invalidates_session(
     transport: BleakTransport,
 ) -> None:
@@ -198,6 +254,27 @@ async def test_notification_queue_is_bounded(transport: BleakTransport) -> None:
     for value in range(300):
         callback(None, reply(c.QUERY_VOLUME, bytes((16, value % 17))))
     assert transport._queue.qsize() == transport._NOTIFICATION_QUEUE_LIMIT
+    events = await transport.events(limit=256)
+    assert events["count"] == 256
+    assert events["latest_sequence"] == 300
+    assert events["dropped_before_retention"] == 44
+    assert events["events"][-1]["opcode"] == c.QUERY_VOLUME
+
+
+async def test_event_sessions_are_stable_and_obsolete_callbacks_are_ignored(
+    transport: BleakTransport,
+) -> None:
+    await transport.connect()
+    first_callback = MockClient.instances[0].notification_callback
+    first_callback(None, reply(c.QUERY_VOLUME, b"\x10\x06"))
+    await transport.disconnect()
+    await transport.connect()
+    second_callback = MockClient.instances[1].notification_callback
+    second_callback(None, reply(c.QUERY_VOLUME, b"\x10\x07"))
+    first_callback(None, reply(c.QUERY_VOLUME, b"\x10\x08"))
+    events = await transport.events(limit=10)
+    assert [event["session"] for event in events["events"]] == [1, 2]
+    assert [event["payload_hex"] for event in events["events"]] == ["1006", "1007"]
 
 
 async def test_scan_filters_in_process_without_bluez_uuid_filter(

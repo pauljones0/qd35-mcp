@@ -8,10 +8,19 @@ from qd35_mcp.protocol import (
     decode_frame,
     encode_frame,
     parse_address,
+    parse_audio_status,
+    parse_capabilities,
+    parse_custom_light_finish,
+    parse_custom_light_progress,
+    parse_custom_light_start,
+    parse_custom_light_status,
     parse_eq,
     parse_eq_preset,
     parse_firmware,
     parse_light,
+    parse_light_setting,
+    parse_light_timer,
+    parse_media_info,
     parse_playback,
     parse_volume,
 )
@@ -67,12 +76,26 @@ def test_stream_decoder_rejects_implausible_length_without_blocking() -> None:
     assert items[-1].opcode == 0xD5
 
 
-def test_stream_decoder_recovers_from_plausible_but_false_length() -> None:
+def test_stream_decoder_preserves_plausible_fragment_until_explicit_reset() -> None:
     incomplete = bytes.fromhex("bbec660064") + b"garbage"
     valid = reply(0xD5, b"\x00")
-    items = FrameStreamDecoder().feed(incomplete + valid)
-    assert isinstance(items[0], ProtocolError)
+    decoder = FrameStreamDecoder()
+    assert decoder.feed(incomplete + valid) == []
+    decoder.reset()
+    items = decoder.feed(valid)
     assert items[-1].opcode == 0xD5
+
+
+def test_stream_decoder_does_not_promote_embedded_frame_from_fragmented_payload() -> None:
+    inner = reply(0x66, b"\x10\x06")
+    outer = reply(0x50, b"prefix" + inner + b"suffix")
+    decoder = FrameStreamDecoder()
+    split = 5 + len(b"prefix") + len(inner)
+    assert decoder.feed(outer[:split]) == []
+    items = decoder.feed(outer[split:])
+    assert len(items) == 1
+    assert items[0].opcode == 0x50
+    assert items[0].payload == b"prefix" + inner + b"suffix"
 
 
 def test_parses_live_eq_capture() -> None:
@@ -155,6 +178,104 @@ def test_playback_parser_uses_app_confirmed_playing_value() -> None:
     assert parse_playback(b"\x03") == {"value": 3, "playing": False}
     with pytest.raises(ProtocolError, match="exactly 1"):
         parse_playback(b"")
+
+
+def test_decodes_live_d8_capabilities() -> None:
+    parsed = parse_capabilities(bytes.fromhex("0000010401010100000001010a0c0a00002004830401"))
+    assert parsed["length"] == 22
+    assert parsed["rename"] == {
+        "mode": 4,
+        "max_utf8_bytes": 35,
+        "packaged_write": False,
+        "package_size": None,
+        "reboots_bluetooth": True,
+    }
+    assert parsed["eq_profile"] == 12
+    assert parsed["skin_profile"] == 10
+    assert parsed["supported"]["ldac"] is True
+    assert parsed["supported"]["clock_hms_format"] is True
+    assert parsed["supported"]["light_timer"] is False
+    assert parsed["supported"]["no_audio_auto_shutdown"] is False
+    assert parsed["supported"]["shutdown_timer"] is False
+    assert parsed["supported"]["separate_light_color"] is False
+
+
+def test_d8_is_length_aware_and_preserves_unknown_tail() -> None:
+    parsed = parse_capabilities(bytes((0, 0, 1, 6)) + bytes(19))
+    assert parsed["rename"]["max_utf8_bytes"] == 24
+    assert parsed["rename"]["reboots_bluetooth"] is False
+    assert parsed["unknown_trailing_hex"] == "00"
+    with pytest.raises(ProtocolError, match="empty"):
+        parse_capabilities(b"")
+
+
+def test_parses_status_timer_media_and_custom_light_payloads() -> None:
+    assert parse_audio_status(b"\x03") == {"value": 3, "logos": [], "known": False}
+    assert parse_audio_status(b"\x0c") == {
+        "value": 12,
+        "logos": ["hwa", "hi_res"],
+        "known": True,
+    }
+    assert parse_custom_light_status(b"\x01\x07") == {
+        "asset_id": 1,
+        "detail": 7,
+        "palette_key": 7,
+    }
+    assert parse_custom_light_status(b"\x17\xaa") == {
+        "asset_id": 23,
+        "detail": 170,
+        "palette_key": None,
+    }
+    assert parse_light_timer(b"\x02\x1e") == {"index": 2, "value": 30}
+    assert parse_media_info(b"\x01\x04\x03SongDJX") == {
+        "playing": True,
+        "title": "Song",
+        "artist": "DJX",
+        "metadata_present": True,
+    }
+    assert parse_media_info(b"\x00") == {
+        "playing": False,
+        "title": None,
+        "artist": None,
+        "metadata_present": False,
+    }
+    assert parse_custom_light_status(b"\x17") == {
+        "asset_id": 23,
+        "detail": None,
+        "palette_key": None,
+    }
+    assert parse_light_setting(bytes.fromhex("010604050632ff")) == {
+        "group": 1,
+        "effect_id": 6,
+        "effect": "static",
+        "raw_color": [4, 5, 6],
+        "brightness": 50,
+        "speed": None,
+        "wire_speed": 255,
+    }
+    start = parse_custom_light_start(bytes.fromhex("01020304002500001000"))
+    assert start["version"] == "1.2.3"
+    assert start["transfer_limit"] == 37
+    assert start["device_size"] == 4096
+    assert parse_custom_light_progress(b"\x00\x05")["success"] is True
+    assert parse_custom_light_finish(b"\x01")["success"] is True
+
+
+@pytest.mark.parametrize(
+    ("parser", "payload"),
+    [
+        (parse_audio_status, b""),
+        (parse_custom_light_status, b""),
+        (parse_light_timer, b"\x00"),
+        (parse_media_info, b"\x01\x04\x00abc"),
+        (parse_custom_light_start, b"\x00" * 9),
+        (parse_custom_light_progress, b"\x00"),
+        (parse_custom_light_finish, b""),
+    ],
+)
+def test_new_parsers_reject_truncated_payloads(parser: object, payload: bytes) -> None:
+    with pytest.raises(ProtocolError):
+        parser(payload)  # type: ignore[operator]
 
 
 @pytest.mark.parametrize("xor_payload", [False, True])
