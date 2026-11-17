@@ -17,7 +17,10 @@ The protocol is independently implemented from observed behavior and Edifier Con
 - Adjust or reset the six DIY bands: 62 Hz, 250 Hz, 1 kHz, 4 kHz, 8 kHz, and 16 kHz
 - Select or reset lighting effects; use RGB on effects 3–6, named color modes on effects 1, 2, and 7, and change global brightness, supported speed, or on/off state
 - Install all four official Extended animations (Gradient, Water-drop, Spiral, and Multicolored), with palette support where the app provides it
-- Upload bounded pixel-order, RGB, timing, and fourth-component diagnostic animations for video-assisted reverse engineering
+- Upload bounded address-mapping, RGB, timing, and fourth-component diagnostic animations for video-assisted reverse engineering
+- Probe Spiral's firmware-generated type-3 motion with bounded color and timing diagnostics
+- Read the calibrated front-view visible-emission position for all 37 wire addresses
+- Compile and upload local RGB animations with 1–102 frames, exactly 37 colors per frame, bounded timing, and no file/URL input
 - Retain and expose unsolicited playback/title/artist events instead of discarding them
 - Play/pause and skip the active Bluetooth player
 - Sync the clock and choose 12/24-hour display
@@ -90,6 +93,7 @@ Do not copy that example address unless it is your speaker.
 | `qd35_get_events` | Read retained notifications, including playback/title/artist events and raw unknown events |
 | `qd35_list_custom_lights` | List official QD35 Extended animations and palettes |
 | `qd35_apply_diagnostic_light` | Upload one low-brightness protocol-calibration animation |
+| `qd35_apply_authored_light` | Compile and upload bounded local RGB frames; byte four is forced to zero |
 | `qd35_set_volume` | Set and read back volume |
 | `qd35_set_input` | Select `bluetooth`, `aux`, or `usb` |
 | `qd35_set_eq_preset` | Select `music`, `game`, `movie`, or `diy` |
@@ -116,7 +120,9 @@ Do not copy that example address unless it is your speaker.
 
 Lighting controls are effect-specific: `ambient` and `magic_tides` accept `color_mode` values `light`/`deep`; `shooting_star`, `breathing`, `tempo_emo`, and `static` accept `rgb`; `extended` accepts `off`/`on`. Brightness is global on firmware 1.3.0. Speed is available only when status reports a numeric speed.
 
-Custom-light downloads are restricted to fixed Edifier HTTPS URLs, capped in size, and checked against pinned SHA-256 hashes and the recovered 150-byte record format before Bluetooth transfer. Firmware, target identity, and one-write ATT capacity are verified before `79`; transfer limits come from the speaker, every chunk is acknowledged with bounded retries, failure triggers a best-effort abort, and completion is checked with `78` identity readback. Firmware does not return the installed binary, so the result states that verification limit explicitly. Diagnostic patterns are generated locally from fixed, validated geometry and activate at no more than 25% brightness.
+Custom-light downloads are restricted to fixed Edifier HTTPS URLs, capped in size, and checked against pinned SHA-256 hashes and the recovered 150-byte record format before Bluetooth transfer. Firmware, target identity, and one-write ATT capacity are verified before `79`; transfer limits come from the speaker, every chunk is acknowledged with bounded retries, failure triggers a best-effort abort, and completion is checked with `78` identity readback. Firmware does not return the installed binary, so the result states that verification limit explicitly. Diagnostic patterns are generated locally from fixed, validated geometry and activate at no more than 25% brightness. Authored animations accept only inline `#RRGGBB` frames: 1–102 frames, exactly 37 colors per frame, 5–60,000 ms per frame, and a ten-minute loop bound. They cannot select files or network locations, and byte four is always zero.
+
+The diagnostic catalog includes the measured front-view emission centroid for every wire address. These coordinates locate the visible light-guide output, not an unseen LED package. See [docs/address-map.md](docs/address-map.md) for the schematic, measurement method, and 3D limits.
 
 Setting tools read state back when the protocol allows it. Media `C2` is one-way, but the tool also queries `C3` playing state; that can verify play/pause, not track changes. Clock sync reports a device success acknowledgement but `applied` remains unknown because the protocol has no clock readback. A timeout, malformed confirmation, or connection loss after any write is reported as an uncertain outcome. Firmware 1.3.0 restarts Bluetooth after an LDAC change and may invalidate the tested host bond, so re-pair Classic audio and call `qd35_get_status` to verify the requested mode. The tool avoids the restart entirely when the requested mode is already active.
 

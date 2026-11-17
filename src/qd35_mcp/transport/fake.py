@@ -54,6 +54,7 @@ class FakeTransport(Transport):
         self.custom_light_palette = 0
         self.custom_light_sequences: set[int] = set()
         self.custom_light_bytes_written = 0
+        self.custom_light_type: int | None = None
         self.light_timer = (0, 0)
         self.name = "EDIFIER QD35 (simulated)"
         self.firmware = bytes((1, 3, 0))
@@ -174,6 +175,7 @@ class FakeTransport(Transport):
             if self.custom_light_transfer is None:
                 return b"\x01\x00"
             sequence = payload[2]
+            self.custom_light_type = payload[0]
             if sequence not in self.custom_light_sequences:
                 self.custom_light_transfer.extend(payload[5:-2])
                 self.custom_light_sequences.add(sequence)

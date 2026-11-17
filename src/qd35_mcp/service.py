@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Sequence
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
@@ -9,7 +10,12 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from . import constants as c
-from .animations import build_diagnostic_animation, list_diagnostic_animations
+from .animations import (
+    GeneratedAnimation,
+    build_diagnostic_animation,
+    compile_authored_animation,
+    list_diagnostic_animations,
+)
 from .config import Config
 from .custom_lights import CustomLightAsset, fetch_custom_light_asset, list_custom_lights
 from .errors import (
@@ -827,10 +833,15 @@ class QD35Service:
         palette_key: int | None = None,
         activate: bool = True,
         activation_brightness: int | None = None,
+        _animation: GeneratedAnimation | None = None,
     ) -> dict[str, object]:
         """Upload a verified official or bounded diagnostic animation using 79/7A/7B."""
         self._write_allowed()
-        preset = preset.strip().lower().replace("-", "_")
+        preset = (
+            _animation.name
+            if _animation is not None
+            else preset.strip().lower().replace("-", "_")
+        )
         if activation_brightness is not None and not 1 <= activation_brightness <= 100:
             raise ValueError("activation_brightness must be between 1 and 100")
         capabilities = parse_capabilities(await self._request(c.QUERY_CAPABILITIES))
@@ -850,26 +861,42 @@ class QD35Service:
             raise ProtocolError("speaker does not report QD35 group 1 Extended lighting")
         custom_before = parse_custom_light_status(await self._request(c.QUERY_CUSTOM_LIGHT))
         generated: dict[str, object] | None = None
-        if preset in {
+        if _animation is not None:
+            if palette_key is not None:
+                raise ValueError("authored animations do not accept palette_key")
+            animation = _animation
+            data = animation.data
+            generated = animation.to_dict()
+            asset = CustomLightAsset(
+                name=animation.name,
+                asset_id=animation.asset_id,
+                light_type=animation.light_type,
+                url="generated://authored",
+                sha256=animation.sha256,
+                start_asset_id=animation.start_asset_id,
+            )
+        elif preset in {
             "pixel_chase",
+            "address_mapper",
             "rgb_bars",
             "timing_sweep",
             "fourth_byte_sweep",
+            "spiral_color_probe",
+            "spiral_fast_probe",
+            "spiral_slow_probe",
         }:
             if palette_key is not None:
                 raise ValueError("diagnostic animations do not accept palette_key")
             animation = build_diagnostic_animation(preset)
             data = animation.data
             generated = animation.to_dict()
-            # Use the live-verified type-1 frame-sequence path and Gradient identity.
-            # Type 3 selects Spiral's procedural interpreter and would make physical
-            # address-order diagnostics ambiguous even when transfer succeeds.
             asset = CustomLightAsset(
                 name=preset,
-                asset_id=23,
-                light_type=1,
+                asset_id=animation.asset_id,
+                light_type=animation.light_type,
                 url="generated://diagnostic",
                 sha256=animation.sha256,
+                start_asset_id=animation.start_asset_id,
             )
         else:
             asset, data = await asyncio.to_thread(fetch_custom_light_asset, preset, palette_key)
@@ -1083,6 +1110,23 @@ class QD35Service:
                 "installed binary"
             ),
         }
+
+    async def apply_authored_light(
+        self,
+        name: str,
+        frames: Sequence[tuple[int, Sequence[str]]],
+        activate: bool = True,
+        activation_brightness: int | None = None,
+    ) -> dict[str, object]:
+        """Compile and upload a local, structurally bounded RGB animation."""
+        animation = compile_authored_animation(name, frames)
+        return await self.apply_custom_light(
+            animation.name,
+            None,
+            activate,
+            activation_brightness,
+            animation,
+        )
 
     async def _best_effort_custom_light_abort(self) -> bool:
         if not self.transport.connected:

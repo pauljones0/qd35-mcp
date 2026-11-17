@@ -54,6 +54,7 @@ async def test_real_stdio_server_contract() -> None:
             assert "qd35_set_light" in names
             assert "qd35_apply_custom_light" in names
             assert "qd35_apply_diagnostic_light" in names
+            assert "qd35_apply_authored_light" in names
             assert "qd35_create_sunrise_alarm" in names
             assert "qd35_list_alarms" in names
             assert "qd35_set_alarm_audio_keepalive" in names
@@ -113,6 +114,16 @@ async def test_real_stdio_server_contract() -> None:
                 (
                     "qd35_apply_diagnostic_light",
                     {"pattern": "rgb_bars", "brightness": 10},
+                ),
+                (
+                    "qd35_apply_authored_light",
+                    {
+                        "name": "Contract loop",
+                        "frames": [
+                            {"duration_ms": 250, "colors": ["#123456"] * 37}
+                        ],
+                        "brightness": 10,
+                    },
                 ),
                 ("qd35_media_control", {"action": "pause"}),
                 ("qd35_sync_clock", {"clock_format": "24h"}),

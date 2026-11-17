@@ -52,6 +52,23 @@ Lost-ack retry behavior was also tested directly rather than inferred from the s
 
 The original custom slot was empty. After validation, the visible lighting effect and its parameters were restored to breathing. Gradient remains installed but inactive because `78` identifies an asset plus a detail/palette byte; it cannot read back an arbitrary prior binary for backup.
 
+## Animation video calibration
+
+Four generated type-1 animations were uploaded at low global brightness and recorded from the physical speaker:
+
+- The 37-frame white address chase, using control value 100 for every frame, repeated in about 114 frames of a 30 fps recording: approximately 3.80 seconds per loop.
+- RGB bars showed the expected channel order. Addresses 0–11 lit red along the lower-left run, 12–23 lit green through the lower-right/right-side run, and 24–36 lit blue through the remaining upper/left structures. Yellow/cyan boundary seams were optical diffusion between adjacent address blocks, not swapped bytes.
+- The timing sweep was captured at a metadata-confirmed 240 fps. Its eight control values (5, 10, 20, 40, 80, 100, 125, and 640) repeated every 251 captured frames, or 1.046 seconds. Their nominal sum is 1.020 seconds. Together with the chase result, this supports milliseconds plus approximately 3 ms of fixed processing overhead per frame.
+- The fourth component was swept through 0, 1, 16, 64, 128, and 255 with constant low red. The owner saw no change, and stabilized frame analysis found no repeatable cycle in brightness, RGB balance, or white/red ratio at the expected period. On firmware 1.3.0 it has no observable effect; it remains unnamed and authored assets force it to zero.
+
+Because the original chase can begin mid-loop in a recording, a synchronized mapper was added for absolute indexing: long blue start marker, dim-white baseline, addresses 0–36 one at a time with a repeating six-color marker, and a long yellow end marker.
+
+The synchronized mapper was then recorded for 48.98 seconds at 30 fps while the camera moved around the speaker. Four blue start intervals and five yellow boundary intervals were detected; consecutive blue starts were exactly 365 frames apart. The first near-front loop resolved all 37 addresses without wrap ambiguity. Its calibrated visible-emission centroids are published in `docs/address-map.md` and in the diagnostic catalog.
+
+A structure-from-motion cross-check extracted 98 geometry views from the same recording. All 98 registered into one model with 2,803 points, mean track length 10.10, and 0.64-pixel mean reprojection error. A second registration included all 148 exact address-center observations and reached 246 registered images and 7,494 points, but singular bundle-adjustment warnings collapsed several added poses onto the same camera center. That second result was rejected for coordinates. The sound 98-view model establishes useful parallax, but the transparent light guides, occlusions, saturation, and moving visible centroid make hidden LED-package coordinates underdetermined from this recording. Public data therefore contains the reliable front-view emission map, not false-precision 3D points. A 3D refinement should record isolated addresses with all other lights off, include scale/fiducials, and cover deliberate fixed-angle arcs.
+
+The generated `spiral_color_probe` was also transferred live as one 150-byte type-3 chunk. The speaker acknowledged sequence 1, completion succeeded, `78` read back Spiral's compatibility asset ID `01`, and Extended activated at 5% brightness. That proves the bounded custom record reaches the firmware's type-3 interpreter. Its visible motion and color semantics still require video observation; successful transfer does not prove how firmware consumes the 37 entries.
+
 ## Media control
 
 `C2` is a one-way AVRCP command: firmware does not emit a `C2` response frame. Waiting
@@ -62,13 +79,13 @@ source was not available for independent track-title verification.
 
 ## Alarm/audio host integration
 
-The Classic QD35 endpoint was paired and trusted, and PipeWire exposed its 48 kHz stereo A2DP sink. A low-volume eight-second `mpv` smoke test played SomaFM's official Groove Salad MP3 stream through that sink and restored the original speaker volume afterward. A disposable systemd user timer launched the standalone alarm runner, synchronized the 12-hour Saskatoon clock, selected Bluetooth input, applied its light step, exited successfully, and was removed.
+The Classic QD35 endpoint was paired and trusted, and PipeWire exposed its 48 kHz stereo A2DP sink. A low-volume eight-second `mpv` smoke test played SomaFM's official Groove Salad MP3 stream through that sink and restored the original speaker volume afterward. A disposable systemd user timer launched the standalone alarm runner, synchronized the 12-hour `America/Regina` clock, selected Bluetooth input, applied its light step, exited successfully, and was removed.
 
 The overnight keepalive was then tested by deliberately dropping only the host's Classic connection. BlueZ changed the device's ephemeral `Paired` state to `no`; an initial implementation incorrectly treated that as a reason not to reconnect. After removing that assumption, the enabled service reconnected, re-established pairing, and restored the A2DP endpoint in 34 seconds without opcode `CD`, pairing-record removal, or speaker power cycling.
 
-A subsequent requirements audit found that the original sunrise service applied its low starting brightness only when the pre-wake ramp began. Optional bedtime preparation is now a distinct oneshot service/timer scheduled on the night preceding each wake day. Unit-generation and runner tests verify that this phase changes only clock/light state over BLE and does not touch input, volume, playback, or Classic audio. Physical light mutation was deferred while the video-calibration chase remained active.
+A subsequent requirements audit found that the original sunrise service applied its low starting brightness only when the pre-wake ramp began. Optional bedtime preparation is now a distinct oneshot service/timer scheduled on the night preceding each wake day. Unit-generation and runner tests verify that this phase changes only clock/light state over BLE and does not touch input, volume, playback, or Classic audio. A daily live schedule was installed for a 22:00 bedtime, 07:30 light-ramp start, 07:50 audio-fade start, and 08:00 wake in `America/Regina`; its state and timezone files are mode 0600. The physical speaker accepted 12-hour clock synchronization and static `#FF6A20` at 3% brightness before the subsequent type-3 diagnostic.
 
-Clock validation also exposed a host-context error: the coding container used UTC while the speaker owner is in Saskatoon. Timezone resolution is now persistent and IANA-based rather than inherited blindly from the process. `America/Regina` was stored mode 0600 and a fresh process synchronized the physical speaker at 22:53:48 CST with 12-hour format; firmware returned success `01`.
+Clock validation also exposed a host-context error: the coding container used UTC while the configured speaker zone is `America/Regina`. Timezone resolution is now persistent and IANA-based rather than inherited blindly from the process. A fresh process synchronized the physical speaker with 12-hour format; firmware returned success `01`.
 
 ## Disruptive-operation validation
 

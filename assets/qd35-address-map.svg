@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 650" role="img" aria-labelledby="title desc">
+  <title id="title">QD35 visible-emission address map</title>
+  <desc id="desc">Front-view schematic showing the measured visible-emission centroid of lighting addresses zero through thirty-six.</desc>
+  <rect width="1200" height="650" rx="32" fill="#0a0d13"/>
+  <text x="70" y="38" fill="#f5f7fb" font-family="system-ui,sans-serif" font-size="22" font-weight="700">QD35 visible-emission centroids — front view</text>
+  <rect x="70" y="85" width="1060" height="443" rx="18" fill="#101722" stroke="#66768d" stroke-width="3"/>
+  <circle cx="620" cy="353" r="200" fill="#080a0e" stroke="#8995a7" stroke-width="5"/>
+  <circle cx="888" cy="253" r="82" fill="#080a0e" stroke="#8995a7" stroke-width="5"/>
+  <g transform="translate(0 33.8846) scale(1 0.851923)" font-family="ui-monospace,monospace" font-size="11" font-weight="700" text-anchor="middle" fill="#fff" stroke="#111" stroke-width="3" paint-order="stroke">
+    <g transform="translate(174.9 553.0)"><circle r="13" fill="#ff4b4b" stroke="none"/><text y="5">0</text></g>
+    <g transform="translate(276.7 521.2)"><circle r="13" fill="#ffd84b" stroke="none"/><text y="5">1</text></g>
+    <g transform="translate(309.6 523.3)"><circle r="13" fill="#43e06f" stroke="none"/><text y="5">2</text></g>
+    <g transform="translate(344.5 442.7)"><circle r="13" fill="#45e6e6" stroke="none"/><text y="5">3</text></g>
+    <g transform="translate(444.2 430.8)"><circle r="13" fill="#5d7cff" stroke="none"/><text y="5">4</text></g>
+    <g transform="translate(468.6 488.5)"><circle r="13" fill="#ef5dff" stroke="none"/><text y="5">5</text></g>
+    <g transform="translate(465.4 531.1)"><circle r="13" fill="#ff4b4b" stroke="none"/><text y="5">6</text></g>
+    <g transform="translate(501.4 508.2)"><circle r="13" fill="#ffd84b" stroke="none"/><text y="5">7</text></g>
+    <g transform="translate(532.2 537.4)"><circle r="13" fill="#43e06f" stroke="none"/><text y="5">8</text></g>
+    <g transform="translate(574.6 533.2)"><circle r="13" fill="#45e6e6" stroke="none"/><text y="5">9</text></g>
+    <g transform="translate(620.1 528.0)"><circle r="13" fill="#5d7cff" stroke="none"/><text y="5">10</text></g>
+    <g transform="translate(733.6 534.8)"><circle r="13" fill="#ef5dff" stroke="none"/><text y="5">11</text></g>
+    <g transform="translate(791.9 542.6)"><circle r="13" fill="#ff4b4b" stroke="none"/><text y="5">12</text></g>
+    <g transform="translate(803.5 538.4)"><circle r="13" fill="#ffd84b" stroke="none"/><text y="5">13</text></g>
+    <g transform="translate(818.4 531.6)"><circle r="13" fill="#43e06f" stroke="none"/><text y="5">14</text></g>
+    <g transform="translate(868.2 457.3)"><circle r="13" fill="#45e6e6" stroke="none"/><text y="5">15</text></g>
+    <g transform="translate(886.2 450.5)"><circle r="13" fill="#5d7cff" stroke="none"/><text y="5">16</text></g>
+    <g transform="translate(977.4 522.3)"><circle r="13" fill="#ef5dff" stroke="none"/><text y="5">17</text></g>
+    <g transform="translate(1006.0 542.6)"><circle r="13" fill="#ff4b4b" stroke="none"/><text y="5">18</text></g>
+    <g transform="translate(1079.1 551.4)"><circle r="13" fill="#ffd84b" stroke="none"/><text y="5">19</text></g>
+    <g transform="translate(787.6 82.9)"><circle r="13" fill="#43e06f" stroke="none"/><text y="5">20</text></g>
+    <g transform="translate(1002.8 70.4)"><circle r="13" fill="#45e6e6" stroke="none"/><text y="5">21</text></g>
+    <g transform="translate(1044.1 228.0)"><circle r="13" fill="#5d7cff" stroke="none"/><text y="5">22</text></g>
+    <g transform="translate(857.6 442.2)"><circle r="13" fill="#ef5dff" stroke="none"/><text y="5">23</text></g>
+    <g transform="translate(1020.8 336.6)"><circle r="13" fill="#ff4b4b" stroke="none"/><text y="5">24</text></g>
+    <g transform="translate(874.5 446.4)"><circle r="13" fill="#ffd84b" stroke="none"/><text y="5">25</text></g>
+    <g transform="translate(781.3 555.0)"><circle r="13" fill="#43e06f" stroke="none"/><text y="5">26</text></g>
+    <g transform="translate(808.8 553.0)"><circle r="13" fill="#45e6e6" stroke="none"/><text y="5">27</text></g>
+    <g transform="translate(575.6 570.6)"><circle r="13" fill="#5d7cff" stroke="none"/><text y="5">28</text></g>
+    <g transform="translate(354.1 522.3)"><circle r="13" fill="#ef5dff" stroke="none"/><text y="5">29</text></g>
+    <g transform="translate(217.3 384.5)"><circle r="13" fill="#ff4b4b" stroke="none"/><text y="5">30</text></g>
+    <g transform="translate(374.2 278.4)"><circle r="13" fill="#ffd84b" stroke="none"/><text y="5">31</text></g>
+    <g transform="translate(408.1 207.7)"><circle r="13" fill="#43e06f" stroke="none"/><text y="5">32</text></g>
+    <g transform="translate(513.1 73.5)"><circle r="13" fill="#45e6e6" stroke="none"/><text y="5">33</text></g>
+    <g transform="translate(615.9 114.6)"><circle r="13" fill="#5d7cff" stroke="none"/><text y="5">34</text></g>
+    <g transform="translate(732.5 152.6)"><circle r="13" fill="#ef5dff" stroke="none"/><text y="5">35</text></g>
+    <g transform="translate(753.7 105.8)"><circle r="13" fill="#ff4b4b" stroke="none"/><text y="5">36</text></g>
+  </g>
+  <text x="70" y="575" fill="#aeb9c9" font-family="system-ui,sans-serif" font-size="16">Points are the pre-SLAM front-frame measurements; SLAM is only a geometry cross-check.</text>
+  <text x="70" y="602" fill="#aeb9c9" font-family="system-ui,sans-serif" font-size="16">They mark visible light-guide output, not hidden LED packages.</text>
+</svg>

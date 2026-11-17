@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .alarms import AlarmManager
 from .config import Config
@@ -14,6 +14,15 @@ from .errors import QD35Error
 from .service import QD35Service
 from .transport.bleak import BleakTransport
 from .transport.fake import FakeTransport
+
+RGBColor = Annotated[str, Field(pattern=r"^#[0-9A-Fa-f]{6}$")]
+
+
+class AnimationFrameInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    duration_ms: Annotated[int, Field(ge=5, le=60_000)]
+    colors: Annotated[list[RGBColor], Field(min_length=37, max_length=37)]
 
 
 def create_service(config: Config | None = None) -> QD35Service:
@@ -200,15 +209,32 @@ def create_server(
     async def qd35_apply_diagnostic_light(
         pattern: Literal[
             "pixel_chase",
+            "address_mapper",
             "rgb_bars",
             "timing_sweep",
             "fourth_byte_sweep",
+            "spiral_color_probe",
+            "spiral_fast_probe",
+            "spiral_slow_probe",
         ],
         brightness: Annotated[int, Field(ge=1, le=25)] = 10,
         activate: bool = True,
     ) -> dict[str, object]:
         """Upload a bounded diagnostic animation for video-assisted protocol calibration."""
         return await call(service.apply_custom_light, pattern, None, activate, brightness)
+
+    @server.tool(
+        annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
+    )
+    async def qd35_apply_authored_light(
+        name: Annotated[str, Field(min_length=1, max_length=48)],
+        frames: Annotated[list[AnimationFrameInput], Field(min_length=1, max_length=102)],
+        brightness: Annotated[int, Field(ge=1, le=100)] = 10,
+        activate: bool = True,
+    ) -> dict[str, object]:
+        """Compile and upload bounded local RGB frames; no file paths or URLs are accepted."""
+        compiled = [(frame.duration_ms, frame.colors) for frame in frames]
+        return await call(service.apply_authored_light, name, compiled, activate, brightness)
 
     @server.tool(
         annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False, openWorldHint=False)

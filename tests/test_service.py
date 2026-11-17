@@ -130,6 +130,38 @@ async def test_diagnostic_light_upload_is_bounded_and_uses_low_brightness(
     assert result["lighting"]["effects"][-1]["brightness"] == 10
 
 
+async def test_spiral_diagnostic_uses_type_three_and_compatibility_start_id(
+    config: Config,
+) -> None:
+    transport = FakeTransport()
+    result = await QD35Service(transport, config).apply_custom_light(
+        "spiral_color_probe", activation_brightness=5
+    )
+    assert result["applied"] is True
+    assert result["generated_animation"]["light_type"] == 3
+    assert result["custom_light_after"]["asset_id"] == 1
+    assert transport.custom_light_type == 3
+
+
+async def test_authored_light_compiles_locally_and_forces_fourth_byte_zero(
+    config: Config,
+) -> None:
+    transport = FakeTransport()
+    colors = ["#123456"] * 37
+    result = await QD35Service(transport, config).apply_authored_light(
+        "Safe loop",
+        [(250, colors), (500, colors)],
+        activation_brightness=12,
+    )
+    assert result["applied"] is True
+    assert result["preset"] == "Safe loop"
+    assert result["generated_animation"]["frames"] == 2
+    assert result["generated_animation"]["nominal_duration_ms"] == 750
+    assert result["bytes_uploaded"] == 300
+    assert transport.custom_light_bytes_written == 300
+    assert result["lighting"]["effects"][-1]["brightness"] == 12
+
+
 async def test_fake_custom_light_preserves_palette(
     config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:

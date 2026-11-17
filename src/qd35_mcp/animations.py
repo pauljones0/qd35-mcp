@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .errors import ProtocolError
@@ -11,8 +13,55 @@ LIGHT_COUNT = 37
 FRAME_SIZE = 150
 DEVICE_CAPACITY = 15_360
 MAX_FRAMES = DEVICE_CAPACITY // FRAME_SIZE
+MAX_AUTHORED_DURATION_MS = 10 * 60 * 1000
+_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,47}$")
+_RGB_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 Color = tuple[int, int, int, int]
+
+# Front-view visible-emission centroids measured from the synchronized address mapper.
+# Coordinates are percentages within the transparent lighting chamber, left-to-right and
+# top-to-bottom. They describe where the driven address visibly emits through the light
+# guides, not the hidden physical LED package.
+ADDRESS_EMISSION_MAP: tuple[tuple[float, float], ...] = (
+    (9.9, 94.8),
+    (19.5, 88.7),
+    (22.6, 89.1),
+    (25.9, 73.6),
+    (35.3, 71.3),
+    (37.6, 82.4),
+    (37.3, 90.6),
+    (40.7, 86.2),
+    (43.6, 91.8),
+    (47.6, 91.0),
+    (51.9, 90.0),
+    (62.6, 91.3),
+    (68.1, 92.8),
+    (69.2, 92.0),
+    (70.6, 90.7),
+    (75.3, 76.4),
+    (77.0, 75.1),
+    (85.6, 88.9),
+    (88.3, 92.8),
+    (95.2, 94.5),
+    (67.7, 4.4),
+    (88.0, 2.0),
+    (91.9, 32.3),
+    (74.3, 73.5),
+    (89.7, 53.2),
+    (75.9, 74.3),
+    (67.1, 95.2),
+    (69.7, 94.8),
+    (47.7, 98.2),
+    (26.8, 88.9),
+    (13.9, 62.4),
+    (28.7, 42.0),
+    (31.9, 28.4),
+    (41.8, 2.6),
+    (51.5, 10.5),
+    (62.5, 17.8),
+    (64.5, 8.8),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +70,9 @@ class GeneratedAnimation:
     data: bytes
     description: str
     observation_request: str
+    light_type: int = 1
+    asset_id: int = 23
+    start_asset_id: int | None = None
 
     @property
     def frame_count(self) -> int:
@@ -30,14 +82,25 @@ class GeneratedAnimation:
     def sha256(self) -> str:
         return hashlib.sha256(self.data).hexdigest()
 
+    @property
+    def nominal_duration_ms(self) -> int:
+        return sum(
+            int.from_bytes(self.data[offset : offset + 2], "big")
+            for offset in range(0, len(self.data), FRAME_SIZE)
+        )
+
     def to_dict(self) -> dict[str, object]:
         return {
             "name": self.name,
             "frames": self.frame_count,
             "bytes": len(self.data),
             "sha256": self.sha256,
+            "nominal_duration_ms": self.nominal_duration_ms,
             "description": self.description,
             "observation_request": self.observation_request,
+            "light_type": self.light_type,
+            "asset_id": self.asset_id,
+            "start_asset_id": self.start_asset_id,
         }
 
 
@@ -67,6 +130,51 @@ def validate_animation(data: bytes) -> dict[str, int]:
     return {"frames": len(data) // FRAME_SIZE, "bytes": len(data)}
 
 
+def compile_authored_animation(
+    name: str,
+    frames: Sequence[tuple[int, Sequence[str]]],
+) -> GeneratedAnimation:
+    """Compile a bounded local RGB animation without accepting files or URLs."""
+    cleaned_name = name.strip()
+    if not _NAME_PATTERN.fullmatch(cleaned_name):
+        raise ValueError(
+            "animation name must be 1-48 characters using letters, numbers, spaces, _ or -"
+        )
+    if not 1 <= len(frames) <= MAX_FRAMES:
+        raise ValueError(f"animation must contain between 1 and {MAX_FRAMES} frames")
+
+    encoded: list[bytes] = []
+    total_duration = 0
+    for frame_index, (duration_ms, colors) in enumerate(frames):
+        if not 5 <= duration_ms <= 60_000:
+            raise ValueError(
+                f"frame {frame_index} duration_ms must be between 5 and 60000"
+            )
+        if len(colors) != LIGHT_COUNT:
+            raise ValueError(f"frame {frame_index} must contain exactly {LIGHT_COUNT} colors")
+        lights: list[Color] = []
+        for light_index, color in enumerate(colors):
+            if not isinstance(color, str) or not _RGB_PATTERN.fullmatch(color):
+                raise ValueError(
+                    f"frame {frame_index} color {light_index} must be #RRGGBB"
+                )
+            raw = bytes.fromhex(color[1:])
+            lights.append((raw[0], raw[1], raw[2], 0))
+        total_duration += duration_ms
+        if total_duration > MAX_AUTHORED_DURATION_MS:
+            raise ValueError("animation nominal loop duration must not exceed 10 minutes")
+        encoded.append(encode_frame(duration_ms, lights))
+
+    animation = GeneratedAnimation(
+        cleaned_name,
+        b"".join(encoded),
+        "User-authored local RGB animation with the fourth component forced to zero.",
+        "Verify the physical result; actual frame dwell adds about 3 ms on firmware 1.3.0.",
+    )
+    validate_animation(animation.data)
+    return animation
+
+
 def _solid(color: Color) -> list[Color]:
     return [color] * LIGHT_COUNT
 
@@ -82,6 +190,39 @@ def _pixel_chase() -> GeneratedAnimation:
         b"".join(frames),
         "One white address at a time, in wire order, at a 100-unit official control value.",
         "Record whether the light moves continuously, where index 0 starts, and its direction.",
+    )
+
+
+def _address_mapper() -> GeneratedAnimation:
+    base = (24, 24, 24, 0)
+    markers: tuple[Color, ...] = (
+        (255, 0, 0, 0),
+        (255, 255, 0, 0),
+        (0, 255, 0, 0),
+        (0, 255, 255, 0),
+        (0, 0, 255, 0),
+        (255, 0, 255, 0),
+    )
+    frames = [
+        encode_frame(1_200, _solid((0, 0, 255, 0))),
+        encode_frame(300, _solid(base)),
+    ]
+    for active in range(LIGHT_COUNT):
+        lights = [base] * LIGHT_COUNT
+        lights[active] = markers[active % len(markers)]
+        frames.append(encode_frame(250, lights))
+    frames.append(encode_frame(1_200, _solid((255, 255, 0, 0))))
+    return GeneratedAnimation(
+        "address_mapper",
+        b"".join(frames),
+        (
+            "Blue sync, dim-white baseline, then addresses 0-36 one at a time with a "
+            "six-color repeating marker, followed by a yellow end marker."
+        ),
+        (
+            "Record two full blue-to-yellow loops; count from the first colored address after "
+            "the dim-white separator to map every physical position."
+        ),
     )
 
 
@@ -135,11 +276,66 @@ def _fourth_byte_sweep() -> GeneratedAnimation:
     )
 
 
+def _spiral_color_probe() -> GeneratedAnimation:
+    colors: tuple[Color, ...] = (
+        (255, 0, 0, 0),
+        (255, 255, 0, 0),
+        (0, 255, 0, 0),
+        (0, 255, 255, 0),
+        (0, 0, 255, 0),
+        (255, 0, 255, 0),
+    )
+    lights = [colors[index % len(colors)] for index in range(LIGHT_COUNT)]
+    return GeneratedAnimation(
+        "spiral_color_probe",
+        encode_frame(100, lights),
+        (
+            "One type-3 procedural record with six repeating address colors; unlike type 1, "
+            "the firmware generates the motion."
+        ),
+        (
+            "Record whether colors move in wire order, a firmware-remapped physical order, "
+            "or remain attached to fixed guides."
+        ),
+        light_type=3,
+        asset_id=25,
+        start_asset_id=1,
+    )
+
+
+def _spiral_fast_probe() -> GeneratedAnimation:
+    return GeneratedAnimation(
+        "spiral_fast_probe",
+        encode_frame(20, _solid((255, 255, 255, 0))),
+        "Official Spiral geometry with its control value changed from 100 to 20.",
+        "Compare motion speed with spiral_slow_probe; stop if the result flashes.",
+        light_type=3,
+        asset_id=25,
+        start_asset_id=1,
+    )
+
+
+def _spiral_slow_probe() -> GeneratedAnimation:
+    return GeneratedAnimation(
+        "spiral_slow_probe",
+        encode_frame(400, _solid((255, 255, 255, 0))),
+        "Official Spiral geometry with its control value changed from 100 to 400.",
+        "Compare motion speed with spiral_fast_probe and the official Spiral.",
+        light_type=3,
+        asset_id=25,
+        start_asset_id=1,
+    )
+
+
 _BUILDERS = {
     "pixel_chase": _pixel_chase,
+    "address_mapper": _address_mapper,
     "rgb_bars": _rgb_bars,
     "timing_sweep": _timing_sweep,
     "fourth_byte_sweep": _fourth_byte_sweep,
+    "spiral_color_probe": _spiral_color_probe,
+    "spiral_fast_probe": _spiral_fast_probe,
+    "spiral_slow_probe": _spiral_slow_probe,
 }
 
 
@@ -152,8 +348,27 @@ def list_diagnostic_animations() -> dict[str, object]:
             "bytes_per_frame": FRAME_SIZE,
             "device_capacity": DEVICE_CAPACITY,
             "maximum_complete_frames": MAX_FRAMES,
-            "fourth_component": "unresolved; official assets use zero",
-            "control_unit": "unresolved",
+            "fourth_component": (
+                "no observable effect on QD35 firmware 1.3.0; official and authored assets use zero"
+            ),
+            "control_unit": (
+                "milliseconds, plus approximately 3 ms processing overhead per frame on "
+                "QD35 firmware 1.3.0"
+            ),
+        },
+        "address_map": {
+            "coordinate_system": (
+                "front-view percentage within the transparent lighting chamber; "
+                "x increases left-to-right and y increases top-to-bottom"
+            ),
+            "meaning": (
+                "video-calibrated visible-emission centroid for each wire address; "
+                "not the hidden LED package position"
+            ),
+            "points": [
+                {"address": address, "x_percent": point[0], "y_percent": point[1]}
+                for address, point in enumerate(ADDRESS_EMISSION_MAP)
+            ],
         },
     }
 
