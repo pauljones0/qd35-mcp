@@ -297,9 +297,24 @@ class QD35Service:
                 "factory reset",
             ],
             "not_exposed": {
-                "firmware_update": "OTA is intentionally excluded from an agent interface",
+                "firmware_update": (
+                    "The app lookup and single-image OTA framing are recovered, but no newer "
+                    "QD35 image is offered and recovery/power-loss behavior is unverified"
+                ),
                 "built_in_bgm": "The 32 audio files are app-local media, not speaker BLE commands",
                 "remote_power_on": "Not supported by the official app",
+                "clock_display_off": (
+                    "Firmware can blank the digit grids internally, but the stock Bluetooth "
+                    "protocol exposes only time sync and 12/24-hour format"
+                ),
+                "logo_control": (
+                    "The EDIFIER wordmark has an independent display-grid bit internally, but "
+                    "stock firmware forces it on and exposes no Bluetooth command for it"
+                ),
+                "display_brightness": (
+                    "Clock/logo brightness is hard-coded to the CMS1640 maximum; only speaker "
+                    "standby sends the global display-off command"
+                ),
                 "raw_gatt": "Excluded to keep agents inside the QD35 semantic API",
             },
             "write_policy": {

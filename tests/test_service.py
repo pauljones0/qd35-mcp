@@ -45,6 +45,14 @@ async def test_status_reports_complete_simulated_state(service: QD35Service) -> 
     assert status["lighting"]["selected_effect"] == "breathing"
 
 
+async def test_capabilities_report_stock_display_limits(service: QD35Service) -> None:
+    capabilities = await service.capabilities()
+    excluded = capabilities["not_exposed"]
+    assert "clock_display_off" in excluded
+    assert "logo_control" in excluded
+    assert "display_brightness" in excluded
+
+
 class DropDuringStatusTransport(FakeTransport):
     def __init__(self) -> None:
         super().__init__()

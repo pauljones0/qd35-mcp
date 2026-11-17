@@ -59,7 +59,7 @@ Four generated type-1 animations were uploaded at low global brightness and reco
 - The 37-frame white address chase, using control value 100 for every frame, repeated in about 114 frames of a 30 fps recording: approximately 3.80 seconds per loop.
 - RGB bars showed the expected channel order. Addresses 0–11 lit red along the lower-left run, 12–23 lit green through the lower-right/right-side run, and 24–36 lit blue through the remaining upper/left structures. Yellow/cyan boundary seams were optical diffusion between adjacent address blocks, not swapped bytes.
 - The timing sweep was captured at a metadata-confirmed 240 fps. Its eight control values (5, 10, 20, 40, 80, 100, 125, and 640) repeated every 251 captured frames, or 1.046 seconds. Their nominal sum is 1.020 seconds. Together with the chase result, this supports milliseconds plus approximately 3 ms of fixed processing overhead per frame.
-- The fourth component was swept through 0, 1, 16, 64, 128, and 255 with constant low red. The owner saw no change, and stabilized frame analysis found no repeatable cycle in brightness, RGB balance, or white/red ratio at the expected period. On firmware 1.3.0 it has no observable effect; it remains unnamed and authored assets force it to zero.
+- The reserved byte was swept through 0, 1, 16, 64, 128, and 255 with constant low red. The owner saw no change, and stabilized frame analysis found no repeatable cycle in brightness, RGB balance, or white/red ratio at the expected period. Later firmware analysis proved that the type-1 renderer never loads it; authored assets force it to zero.
 
 Because the original chase can begin mid-loop in a recording, a synchronized mapper was added for absolute indexing: long blue start marker, dim-white baseline, addresses 0–36 one at a time with a repeating six-color marker, and a long yellow end marker.
 
@@ -132,7 +132,7 @@ Classic A2DP remained active.
 
 ## Safety and remaining validation
 
-Firmware 1.3.0 is the version reported by this speaker and the version used by Edifier's current QD35 custom-light catalog. The app exposes OTA only when it has a signed, model-specific image; no newer QD35 image was established during this work. Firmware update remains excluded because the recovered opcode names do not establish image format, integrity validation, rollback, or recovery, and a failed OTA can brick the speaker.
+Firmware 1.3.0 is the version reported by this speaker and the version used by Edifier's current QD35 custom-light catalog. Replaying Edifier Connect's signed OTA lookup recovered the official 40,471-byte QD35 1.3.0 Cortex-M image, and a live query for installed version 1.3.0 returned no newer update. The image and application establish the single-image start frame and 512-byte transfer block size, but update remains excluded from the agent surface because rollback, bootloader recovery, power-loss behavior, and integrity enforcement are still unverified. See [firmware-analysis.md](firmware-analysis.md).
 
 Run unit/simulator checks with `uv run pytest`. Hardware tests are intentionally manual because they operate a real nearby speaker.
 

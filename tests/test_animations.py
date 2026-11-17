@@ -145,12 +145,13 @@ def test_encode_and_validation_fail_closed() -> None:
         validate_animation(bytes(FRAME_SIZE * 103))
 
 
-def test_catalog_describes_unresolved_fields() -> None:
+def test_catalog_describes_recovered_format() -> None:
     catalog = list_diagnostic_animations()
     assert catalog["format"]["lights_per_frame"] == 37
     assert catalog["format"]["maximum_complete_frames"] == 102
     assert catalog["format"]["control_unit"].startswith("milliseconds")
-    assert catalog["format"]["fourth_component"].startswith("no observable effect")
+    assert catalog["format"]["reserved_byte"].startswith("not rendered")
+    assert catalog["format"]["fourth_component"].startswith("deprecated name")
     points = catalog["address_map"]["points"]
     assert len(points) == LIGHT_COUNT == len(ADDRESS_EMISSION_MAP)
     assert [point["address"] for point in points] == list(range(LIGHT_COUNT))

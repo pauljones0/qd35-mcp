@@ -1,6 +1,15 @@
 # QD35 lighting address map
 
-The QD35 custom-light record contains 37 four-byte light entries. This map locates the **visible emission centroid** of each wire address from a near-front view. It does not claim to locate the hidden LED package: the transparent plastic routes one source through an extended guide, and the apparent centroid moves with viewpoint.
+The tested QD35 transmits and visibly responds to 37 addressable RGB nodes. Wire
+addresses **0–19 traverse the lower light guide from left to right**; addresses
+**20–36 traverse the ring around the mid-bass driver**. This map locates the
+**visible emission centroid** of each wire address from a near-front view. It does
+not claim to locate the hidden package: the transparent plastic routes a source
+through an extended guide, and the apparent centroid moves with viewpoint.
+
+A teardown of the domestic NEW-X shows a different 20-package lighting board. That
+photograph is useful construction evidence, but it is not substituted for the
+37-node serializer and 37 live responses measured on this international QD35.
 
 ![QD35 visible-emission address map](../assets/qd35-address-map.svg)
 

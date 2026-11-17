@@ -212,7 +212,7 @@ def compile_authored_animation(
     animation = GeneratedAnimation(
         cleaned_name,
         b"".join(encoded),
-        "User-authored local RGB animation with the fourth component forced to zero.",
+        "User-authored local RGB animation with the reserved byte forced to zero.",
         "Verify the physical result; actual frame dwell adds about 3 ms on firmware 1.3.0.",
     )
     validate_animation(animation.data)
@@ -343,7 +343,10 @@ def _fourth_byte_sweep() -> GeneratedAnimation:
     return GeneratedAnimation(
         "fourth_byte_sweep",
         b"".join(encode_frame(0x0280, _solid((16, 0, 0, value))) for value in values),
-        "Low-red frames with the unresolved fourth component stepped from 0 through 255.",
+        (
+            "Legacy diagnostic: low-red frames with the now-confirmed reserved byte "
+            "stepped from 0 through 255."
+        ),
         "Record any brightness, white-channel, color, or transition change; stop if it flashes.",
     )
 
@@ -426,8 +429,8 @@ def _spiral_fast_probe() -> GeneratedAnimation:
     return GeneratedAnimation(
         "spiral_fast_probe",
         encode_frame(20, _solid((255, 255, 255, 0))),
-        "Official Spiral geometry with its control value changed from 100 to 20.",
-        "Compare motion speed with spiral_slow_probe; stop if the result flashes.",
+        "Legacy Spiral probe with header 100 changed to 20; firmware shows it is ignored.",
+        "Retained for reproducibility; no speed change is expected on firmware 1.3.0.",
         light_type=3,
         asset_id=25,
         start_asset_id=1,
@@ -438,8 +441,8 @@ def _spiral_slow_probe() -> GeneratedAnimation:
     return GeneratedAnimation(
         "spiral_slow_probe",
         encode_frame(400, _solid((255, 255, 255, 0))),
-        "Official Spiral geometry with its control value changed from 100 to 400.",
-        "Compare motion speed with spiral_fast_probe and the official Spiral.",
+        "Legacy Spiral probe with header 100 changed to 400; firmware shows it is ignored.",
+        "Retained for reproducibility; no speed change is expected on firmware 1.3.0.",
         light_type=3,
         asset_id=25,
         start_asset_id=1,
@@ -595,8 +598,11 @@ def list_diagnostic_animations() -> dict[str, object]:
             "bytes_per_frame": FRAME_SIZE,
             "device_capacity": DEVICE_CAPACITY,
             "maximum_complete_frames": MAX_FRAMES,
+            "reserved_byte": (
+                "not rendered by QD35 firmware 1.3.0; official and authored assets use zero"
+            ),
             "fourth_component": (
-                "no observable effect on QD35 firmware 1.3.0; official and authored assets use zero"
+                "deprecated name for reserved_byte; not rendered by QD35 firmware 1.3.0"
             ),
             "control_unit": (
                 "milliseconds, plus approximately 3 ms processing overhead per frame on "

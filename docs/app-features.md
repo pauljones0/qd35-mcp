@@ -17,15 +17,21 @@ This inventory combines the model-specific Edifier Connect operation manual, the
 | Media metadata/events | Playback, title, and artist notifications | Retained, bounded event history with strict parsing; live `50 00 00 00` event captured |
 | Built-in BGM | 32 app audio tracks across 10 categories, repeat/selection | Not bundled; these are app-local copyrighted media, not BLE-resident tracks |
 | Clock | Sync to host, 12-hour or 24-hour format | Preserve, 12h, and 24h payloads acknowledged live; no clock readback exists |
+| Clock/logo illumination | Stock firmware keeps both on at fixed maximum display-driver brightness while active | No app/BLE command exists for clock off, logo off, or display dimming; RGB can be off independently, while standby blanks everything but also exits active Bluetooth mode |
 | LDAC | 96 kHz, 48/44.1 kHz, disabled | 48/44.1 kHz and 96 kHz both verified by post-restart readback, then restored off |
 | Device name/info | Rename; show address and firmware | Changed name, exact 35-byte D8 boundary, and restoration verified live |
 | Bluetooth disconnect | Disconnect Classic audio | Live-verified behind dangerous-operation gate |
 | Power off | Remote shutdown; no remote power-on | Live-verified behind dangerous-operation gate |
 | Factory reset | Clear settings and pairing information | Live-verified with marked settings and fresh pairing |
-| Firmware update | Conditional OTA flow | Deliberately excluded from the agent surface |
+| Firmware update | Signed model/version lookup, download, and BLE OTA | Official 1.3.0 image recovered; installed 1.3.0 is current; flashing remains excluded pending recovery and power-loss validation |
 | Manual/store/profile | App navigation and web content | Not speaker controls |
 
 The 2023 app manual presents ten visual labels/modes. Firmware 1.3.0 directly reports seven selectable effect records in lighting group 1. Four downloadable animations live inside effect 7 (Extended), rather than being additional `6B` effect IDs. The MCP preserves that distinction and uses live-reported IDs.
+
+Firmware disassembly separates the 37-node RGB chain from the CMS1640-driven clock,
+status icons, and EDIFIER wordmark. The wordmark has its own grid bit and the clock
+digits can be blanked internally, but no stock Bluetooth command reaches either
+operation. See [firmware-analysis.md](firmware-analysis.md).
 
 Primary references:
 
