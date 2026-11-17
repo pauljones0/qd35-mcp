@@ -215,6 +215,7 @@ def create_server(
             "fourth_byte_sweep",
             "spiral_color_probe",
             "spiral_index_probe",
+            "spiral_fourth_probe",
             "spiral_fast_probe",
             "spiral_slow_probe",
         ],

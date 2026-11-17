@@ -402,6 +402,26 @@ def _spiral_index_probe() -> GeneratedAnimation:
     )
 
 
+def _spiral_fourth_probe() -> GeneratedAnimation:
+    values = (0, 1, 16, 64, 128, 255)
+    lights = [(96, 0, 0, values[index % len(values)]) for index in range(LIGHT_COUNT)]
+    return GeneratedAnimation(
+        "spiral_fourth_probe",
+        encode_frame(100, lights),
+        (
+            "A type-3 record with constant low red and repeating fourth-component values "
+            "0, 1, 16, 64, 128, and 255."
+        ),
+        (
+            "Film the whole path and compare brightness, color, spacing, and motion against the "
+            "zero-fourth-byte control; stop if the result flashes."
+        ),
+        light_type=3,
+        asset_id=25,
+        start_asset_id=1,
+    )
+
+
 def _spiral_fast_probe() -> GeneratedAnimation:
     return GeneratedAnimation(
         "spiral_fast_probe",
@@ -552,6 +572,7 @@ _BUILDERS = {
     "fourth_byte_sweep": _fourth_byte_sweep,
     "spiral_color_probe": _spiral_color_probe,
     "spiral_index_probe": _spiral_index_probe,
+    "spiral_fourth_probe": _spiral_fourth_probe,
     "spiral_fast_probe": _spiral_fast_probe,
     "spiral_slow_probe": _spiral_slow_probe,
 }

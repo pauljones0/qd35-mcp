@@ -27,6 +27,7 @@ from qd35_mcp.errors import ProtocolError
         ("fourth_byte_sweep", 6),
         ("spiral_color_probe", 1),
         ("spiral_index_probe", 1),
+        ("spiral_fourth_probe", 1),
         ("spiral_fast_probe", 1),
         ("spiral_slow_probe", 1),
     ],
@@ -76,6 +77,10 @@ def test_spiral_probes_use_the_procedural_interpreter() -> None:
     indexed_lights = [indexed.data[offset : offset + 4] for offset in range(2, FRAME_SIZE, 4)]
     assert len(set(indexed_lights)) == LIGHT_COUNT
     assert all(light[3] == 0 for light in indexed_lights)
+    fourth = build_diagnostic_animation("spiral_fourth_probe")
+    fourth_lights = [fourth.data[offset : offset + 4] for offset in range(2, FRAME_SIZE, 4)]
+    assert {light[:3] for light in fourth_lights} == {bytes((96, 0, 0))}
+    assert {light[3] for light in fourth_lights} == {0, 1, 16, 64, 128, 255}
     assert build_diagnostic_animation("spiral_fast_probe").data[:2] == b"\x00\x14"
     assert build_diagnostic_animation("spiral_slow_probe").data[:2] == b"\x01\x90"
 
