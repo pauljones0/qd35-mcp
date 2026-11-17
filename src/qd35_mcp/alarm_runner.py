@@ -9,7 +9,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from .alarms import AlarmStore, SunriseAlarm, ramp_value
+from .alarms import AlarmStore, SunriseAlarm, perceptual_light_value, ramp_value
 from .server import create_service
 
 _ALARM_ENVIRONMENT_KEYS = (
@@ -117,7 +117,9 @@ async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[st
         while True:
             elapsed = min(duration, time.monotonic() - started)
             light_progress = 1.0 if duration == 0 else elapsed / duration
-            brightness = ramp_value(alarm.start_brightness, alarm.end_brightness, light_progress)
+            brightness = perceptual_light_value(
+                alarm.start_brightness, alarm.end_brightness, light_progress
+            )
             if brightness != last_brightness:
                 result = await service.set_light(
                     effect="static", rgb=alarm.light_rgb, brightness=brightness
@@ -126,7 +128,7 @@ async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[st
                     raise RuntimeError(f"sunrise light step was not verified: {result}")
                 last_brightness = brightness
             if alarm.custom_display:
-                display_brightness = ramp_value(0, 7, light_progress)
+                display_brightness = perceptual_light_value(0, 7, light_progress)
                 if display_brightness != last_display_brightness:
                     display = await service.set_display(
                         power=True,

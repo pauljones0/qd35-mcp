@@ -195,6 +195,23 @@ def ramp_value(start: int, end: int, progress: float) -> int:
     return round(start + (end - start) * bounded)
 
 
+def perceptual_light_value(
+    start: int, end: int, progress: float, *, gamma: float = 2.2
+) -> int:
+    """Map linear elapsed time to an approximately linear perceived-light ramp.
+
+    QD35 brightness is a linear 0-100 control, while perceived brightness is
+    nonlinear.  Raising normalized progress to a display-style gamma keeps the
+    physical output low early in the sunrise and avoids an apparent jump at the
+    beginning.  The endpoints remain exact, including a true zero/off state.
+    """
+    if gamma <= 0:
+        raise ValueError("light gamma must be positive")
+    bounded = min(1.0, max(0.0, progress))
+    corrected = bounded**gamma
+    return round(start + (end - start) * corrected)
+
+
 class AlarmStore:
     def __init__(self, path: Path) -> None:
         self.path = path

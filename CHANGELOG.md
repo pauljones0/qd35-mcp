@@ -56,4 +56,6 @@
   symbols are disabled. A live raw-frame test proved the physical EDIFIER wordmark still catches
   light from clock digits, so MCP results disclose that only whole-display off provides verified
   logo extinction.
+- Sunrise RGB and patched-display brightness now use a gamma-2.2 perceptual curve while radio
+  volume retains its separate linear device-step fade.
 

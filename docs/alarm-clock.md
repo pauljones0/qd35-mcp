@@ -26,12 +26,16 @@ During a run it:
 
 1. Synchronizes the speaker clock and requested 12/24-hour display.
 2. Selects Bluetooth input without disconnecting Classic audio.
-3. Ramps a validated static RGB light from 0 to the configured end brightness.
-4. Ramps the patched front display from hardware level 0 to 7, restoring the logo
-   and status symbols at the beginning of the sunrise.
+3. Ramps a validated static RGB light from 0 to the configured end brightness using
+   a gamma-2.2 perceptual curve. Elapsed time remains linear, but physical output
+   rises slowly at first so the apparent brightness does not jump at the beginning.
+4. Applies the same perceptual curve to the patched front display's eight hardware
+   levels (0–7), restoring the logo and status symbols at the beginning of sunrise.
 5. Connects the already-paired Classic endpoint when audio is due.
 6. Starts `mpv` on the QD35 PipeWire/PulseAudio sink at 50% software gain.
-7. Ramps the speaker's hardware volume from zero to the requested target, which is
+7. Ramps the speaker's hardware volume linearly from zero to the requested target;
+   this is intentionally separate because the speaker's volume steps already use
+   an audio-style response. The target is
    capped at 8/16; new alarms default to a bedside-safe 4/16.
 8. Leaves a radio stream running until `qd35_stop_alarm` or
    `qd35_snooze_alarm` is called.

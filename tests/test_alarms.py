@@ -12,6 +12,7 @@ from qd35_mcp.alarms import (
     alarm_start_schedule,
     bedtime_schedule,
     bedtime_systemd_calendar,
+    perceptual_light_value,
     ramp_value,
     systemd_calendar,
     validate_audio_source,
@@ -89,6 +90,16 @@ def test_ramp_is_bounded_and_monotonic() -> None:
     assert ramp_value(1, 100, -1) == 1
     assert ramp_value(1, 100, 0.5) == 50
     assert ramp_value(1, 100, 2) == 100
+
+
+def test_perceptual_light_ramp_uses_gamma_corrected_output() -> None:
+    assert perceptual_light_value(0, 100, -1) == 0
+    assert perceptual_light_value(0, 100, 0.25) == 5
+    assert perceptual_light_value(0, 100, 0.5) == 22
+    assert perceptual_light_value(0, 100, 0.75) == 53
+    assert perceptual_light_value(0, 100, 2) == 100
+    with pytest.raises(ValueError, match="gamma"):
+        perceptual_light_value(0, 100, 0.5, gamma=0)
 
 
 def test_remote_audio_is_operator_gated(monkeypatch: pytest.MonkeyPatch) -> None:
