@@ -817,15 +817,15 @@ class QD35Service:
             animation = build_diagnostic_animation(preset)
             data = animation.data
             generated = animation.to_dict()
-            # Use the live-verified Spiral compatibility slot. The generated body is
-            # validated independently and the QD35 reports it as Extended asset 01.
+            # Use the live-verified type-1 frame-sequence path and Gradient identity.
+            # Type 3 selects Spiral's procedural interpreter and would make physical
+            # address-order diagnostics ambiguous even when transfer succeeds.
             asset = CustomLightAsset(
                 name=preset,
-                asset_id=1,
-                light_type=3,
+                asset_id=23,
+                light_type=1,
                 url="generated://diagnostic",
                 sha256=animation.sha256,
-                start_asset_id=1,
             )
         else:
             asset, data = await asyncio.to_thread(fetch_custom_light_asset, preset, palette_key)

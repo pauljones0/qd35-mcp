@@ -27,7 +27,7 @@
 - Live duplicate-sequence validation confirming custom-light lost-ack retries are idempotent on
   firmware 1.3.0, followed by successful Gradient and visible-light restoration.
 - Validated diagnostic-animation compiler with 37-address chase, RGB bars, timing sweep, and
-  fourth-component sweep; the full chase was uploaded and activated live at 10% brightness.
+  fourth-component sweep using the type-1 frame-sequence interpreter rather than Spiral type 3.
 - Persistent timezone-aware sunrise alarms backed by systemd user timers, gradual light and
   speaker-volume ramps, local/public-stream audio through `mpv`, and an explicit overnight
   Classic-audio reconnect service that never sends the speaker disconnect command.

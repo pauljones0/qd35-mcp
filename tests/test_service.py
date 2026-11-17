@@ -125,7 +125,7 @@ async def test_diagnostic_light_upload_is_bounded_and_uses_low_brightness(
     assert result["applied"] is True
     assert result["generated_animation"]["frames"] == 1
     assert result["bytes_uploaded"] == 150
-    assert result["custom_light_after"]["asset_id"] == 1
+    assert result["custom_light_after"]["asset_id"] == 23
     assert result["lighting"]["effects"][-1]["brightness"] == 10
 
 

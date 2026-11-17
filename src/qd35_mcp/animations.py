@@ -76,11 +76,11 @@ def _pixel_chase() -> GeneratedAnimation:
     for active in range(LIGHT_COUNT):
         lights = [(0, 0, 0, 0)] * LIGHT_COUNT
         lights[active] = (255, 255, 255, 0)
-        frames.append(encode_frame(0x0014, lights))
+        frames.append(encode_frame(0x0064, lights))
     return GeneratedAnimation(
         "pixel_chase",
         b"".join(frames),
-        "One white address at a time, in wire order, using the Gradient control value.",
+        "One white address at a time, in wire order, at a 100-unit official control value.",
         "Record whether the light moves continuously, where index 0 starts, and its direction.",
     )
 
@@ -96,7 +96,7 @@ def _rgb_bars() -> GeneratedAnimation:
             colors.append((0, 0, 255, 0))
     return GeneratedAnimation(
         "rgb_bars",
-        encode_frame(0x0064, colors),
+        encode_frame(0x0280, colors),
         "Twelve red, twelve green, and thirteen blue addresses in one record.",
         "Record the physical grouping, channel correctness, and whether colors interpolate.",
     )
@@ -129,7 +129,7 @@ def _fourth_byte_sweep() -> GeneratedAnimation:
     values = (0, 1, 16, 64, 128, 255)
     return GeneratedAnimation(
         "fourth_byte_sweep",
-        b"".join(encode_frame(0x0064, _solid((16, 0, 0, value))) for value in values),
+        b"".join(encode_frame(0x0280, _solid((16, 0, 0, value))) for value in values),
         "Low-red frames with the unresolved fourth component stepped from 0 through 255.",
         "Record any brightness, white-channel, color, or transition change; stop if it flashes.",
     )
