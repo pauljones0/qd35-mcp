@@ -48,7 +48,11 @@ class BleakTransport(Transport):
     async def _scan(self, timeout: float) -> list[tuple[Any, Any, DeviceCandidate]]:
         from bleak import BleakScanner
 
-        kwargs: dict[str, object] = {"service_uuids": [c.SEARCH_UUID]}
+        # Do not pass BlueZ a UUID discovery filter here. BlueZ 5.87 can
+        # segfault when a filtered LE discovery starts while this speaker has
+        # an active Classic A2DP transport. Scan broadly and apply the same
+        # a400 filter below in-process instead.
+        kwargs: dict[str, object] = {}
         if self.adapter:
             kwargs["adapter"] = self.adapter
         try:
@@ -80,9 +84,7 @@ class BleakTransport(Transport):
             await self._disconnect_locked()
             matches = await self._scan(self.scan_timeout)
             if device:
-                matches = [
-                    item for item in matches if item[2].address.lower() == device.lower()
-                ]
+                matches = [item for item in matches if item[2].address.lower() == device.lower()]
             if not matches:
                 raise DeviceNotFound("No QD35 advertising the a400 service was found")
             if len(matches) > 1 and not device:
@@ -93,9 +95,7 @@ class BleakTransport(Transport):
             next_device, _, next_candidate = matches[0]
             selector = next_candidate.encryption_selector or 0
             if selector not in (0, 0x10):
-                raise ProtocolError(
-                    f"unsupported QD35 encryption selector 0x{selector:02x}"
-                )
+                raise ProtocolError(f"unsupported QD35 encryption selector 0x{selector:02x}")
             xor_payload = selector == 0x10
             decoder = FrameStreamDecoder(xor_payload)
             queue: asyncio.Queue[Frame | ProtocolError] = asyncio.Queue()
@@ -167,6 +167,26 @@ class BleakTransport(Transport):
             await self._cleanup_client(client)
         while not self._queue.empty():
             self._queue.get_nowait()
+
+    async def send(self, opcode: int, payload: bytes = b"") -> None:
+        async with self._request_lock:
+            if not self.connected:
+                await self._connect_locked(self._candidate.address if self._candidate else None)
+            packet = encode_frame(opcode, payload, self._xor_payload)
+            try:
+                await self._client.write_gatt_char(c.WRITE_UUID, packet, response=False)
+            except asyncio.CancelledError:
+                await self._invalidate_locked()
+                raise
+            except Exception as exc:
+                if not self.connected:
+                    await self._invalidate_locked()
+                    raise OutcomeUnknown(
+                        f"connection dropped while writing opcode 0x{opcode:02X}"
+                    ) from exc
+                raise TransportError(
+                    f"Bluetooth write failed for opcode 0x{opcode:02X}: {exc}"
+                ) from exc
 
     async def request(self, opcode: int, payload: bytes = b"", timeout: float = 4) -> bytes:
         async with self._request_lock:

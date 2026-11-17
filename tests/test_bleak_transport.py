@@ -27,6 +27,7 @@ class MockClient:
         self.is_connected = False
         self.disconnected_callback = kwargs["disconnected_callback"]
         self.notification_callback = None
+        self.writes: list[bytes] = []
         self.__class__.instances.append(self)
 
     async def connect(self) -> None:
@@ -46,9 +47,8 @@ class MockClient:
         self.is_connected = False
         self.disconnected_callback(self)
 
-    async def write_gatt_char(
-        self, _uuid: str, packet: bytes, response: bool = False
-    ) -> None:
+    async def write_gatt_char(self, _uuid: str, packet: bytes, response: bool = False) -> None:
+        self.writes.append(packet)
         if self.auto_reply and self.notification_callback:
             self.notification_callback(None, reply(packet[2], b"\x10\x06"))
 
@@ -135,3 +135,39 @@ async def test_cancelled_request_invalidates_session(transport: BleakTransport) 
         await task
     assert transport.connected is False
     assert MockClient.instances[0].is_connected is False
+
+
+async def test_one_way_send_does_not_wait_for_notification(
+    transport: BleakTransport,
+) -> None:
+    await transport.send(c.MEDIA_CONTROL, b"\x01")
+
+    assert transport.connected is True
+    assert MockClient.instances[0].writes[0][2] == c.MEDIA_CONTROL
+    assert MockClient.instances[0].writes[0][5] == 1
+
+
+async def test_scan_filters_in_process_without_bluez_uuid_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    device = SimpleNamespace(address="64:68:70:64:37:0D", name=None)
+    advertisement = SimpleNamespace(
+        manufacturer_data={c.EDIFIER_COMPANY_ID: b"dhvd7\r\x02\x00"},
+        local_name=None,
+        rssi=-55,
+        service_uuids=[c.SEARCH_UUID],
+    )
+
+    class MockScanner:
+        @staticmethod
+        async def discover(**kwargs: object) -> dict[str, tuple[object, object]]:
+            calls.append(kwargs)
+            return {device.address: (device, advertisement)}
+
+    monkeypatch.setattr(bleak, "BleakScanner", MockScanner)
+    result = await BleakTransport(adapter="hci0").discover(0.01)
+
+    assert len(result) == 1
+    assert result[0].address == device.address
+    assert calls == [{"timeout": 0.01, "return_adv": True, "adapter": "hci0"}]

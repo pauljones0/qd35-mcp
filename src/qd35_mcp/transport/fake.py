@@ -40,6 +40,7 @@ class FakeTransport(Transport):
         self.input_value = 1
         self.eq_preset = 0
         self.ldac = 0
+        self.last_media_action: int | None = None
         self.name = "EDIFIER QD35 (simulated)"
         self.firmware = bytes((1, 3, 0))
         self.light_group = 1
@@ -73,6 +74,14 @@ class FakeTransport(Transport):
 
     async def disconnect(self) -> None:
         self._connected = False
+
+    async def send(self, opcode: int, payload: bytes = b"") -> None:
+        if not self.powered:
+            raise DeviceNotFound("simulated speaker is powered off")
+        if not self._connected:
+            await self.connect()
+        if opcode == c.MEDIA_CONTROL:
+            self.last_media_action = payload[0]
 
     async def request(self, opcode: int, payload: bytes = b"", timeout: float = 4) -> bytes:
         if not self.powered:
@@ -140,6 +149,6 @@ class FakeTransport(Transport):
             self.light_records = self._default_light_records()
             self.bands = self._default_bands()
             return b"\x01"
-        if opcode in {c.MEDIA_CONTROL, c.SYNC_CLOCK, c.DISCONNECT_AUDIO}:
+        if opcode in {c.SYNC_CLOCK, c.DISCONNECT_AUDIO}:
             return b"\x01"
         return b""

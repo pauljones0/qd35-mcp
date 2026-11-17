@@ -25,7 +25,7 @@ ack:     CC may replace BB on some firmware/models
 CHECKSUM = sum(all preceding wire bytes) & FF
 ```
 
-The implementation validates the full 16-bit length, checksum, fragmentation, and multiple frames in one notification. It serializes requests because unsolicited events such as media metadata may arrive between a request and its reply.
+The implementation validates the full 16-bit length, checksum, fragmentation, and multiple frames in one notification. It serializes requests because unsolicited events such as media metadata may arrive between a request and its reply. `C2` media control is explicitly one-way; all other implemented setters use request/reply or connection-loss handling.
 
 ## Live firmware 1.3.0 observations
 
@@ -44,7 +44,10 @@ Captured from a physical speaker identified by `C9` as `EDIFIER QD35`:
 | `C9` name | UTF-8 | `EDIFIER QD35` |
 | `D8` capability block | 22 bytes | raw value retained in `qd35_get_capabilities` |
 
-Implemented request/setter pairs. Definitions are app-confirmed; the same-value volume, input, EQ, and lighting roundtrips were observed live, while changed-value and disruptive validation is tracked separately in `hardware-validation.md`:
+Implemented request/setter pairs. Definitions are app-confirmed. Changed-value volume,
+input, EQ preset, EQ band, lighting, LDAC, rename, and clock operations were observed
+live with readback/restoration where available. Media and disruptive validation are
+tracked separately in `hardware-validation.md`:
 
 | Function | Query | Set/action | Payload |
 |---|---:|---:|---|
@@ -55,7 +58,7 @@ Implemented request/setter pairs. Definitions are app-confirmed; the same-value 
 | Lighting | `6A` | `6B` | group, effect, R, G, B, brightness, wire speed |
 | LDAC | `48` | `49` | off `00`, 48 kHz `01`, 96 kHz `02` |
 | Clock | — | `77` | time and format, capability-dependent |
-| Media | `C3` | `C2` | play `00`, pause `01`, next `04`, previous `05` |
+| Media | `C3` | `C2` (one-way) | play `00`, pause `01`, next `04`, previous `05` |
 | Rename | `C9` | `CA` | UTF-8 name |
 | Disconnect | — | `CD` | empty |
 | Power off | — | `CE` | empty |

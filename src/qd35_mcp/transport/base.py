@@ -33,4 +33,8 @@ class Transport(ABC):
     async def disconnect(self) -> None: ...
 
     @abstractmethod
+    async def send(self, opcode: int, payload: bytes = b"") -> None:
+        """Send a command for which the device does not emit a reply frame."""
+
+    @abstractmethod
     async def request(self, opcode: int, payload: bytes = b"", timeout: float = 4) -> bytes: ...

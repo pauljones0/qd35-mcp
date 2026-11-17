@@ -96,7 +96,7 @@ Do not copy that example address unless it is your speaker.
 | `qd35_power_off` | Remote shutdown; remote power-on is not supported |
 | `qd35_factory_reset` | Clear pairings and settings |
 
-Every setting tool reads state back when the device allows it. A connection loss after a write is reported as an uncertain outcome. Firmware 1.3.0 stops advertising BLE after an LDAC change, so that tool asks for a power-cycle/reconnect and a fresh status check; it avoids the restart entirely when the requested mode is already active.
+Every setting tool reads state back when the device allows it. Media control is a one-way AVRCP command and is reported as sent rather than acknowledged. A connection loss after a write is reported as an uncertain outcome. Firmware 1.3.0 restarts Bluetooth after an LDAC change and invalidated the tested host bond, so re-pair Classic audio and call `qd35_get_status` to verify the requested mode. The tool avoids the restart entirely when the requested mode is already active.
 
 ## Configuration
 
@@ -114,10 +114,11 @@ Logs go to stderr; stdout remains reserved for MCP messages.
 
 ## Troubleshooting
 
-- **No device found:** keep the speaker powered on and close Edifier Connect. The BLE advertisement has no local name on firmware 1.3.0, so name-only scanners miss it.
+- **No device found:** keep the speaker powered on and close Edifier Connect. The BLE advertisement may have no local name, so name-only scanners miss it. If it remains absent after a Bluetooth restart, reconnect the separate Classic audio device (`EDIFIER QD35`); firmware 1.3.0 resumed its BLE control advertisement after the Classic link returned.
 - **Permission error:** ensure the user session can access BlueZ over D-Bus. Test with `bluetoothctl scan le`.
+- **BlueZ 5.87 crashes during discovery:** update to BlueZ 5.88 or newer. BlueZ 5.87 has a known UUID-filter crash; this server avoids it by scanning broadly and filtering `a400` in-process.
 - **Device busy:** only one controller may hold the BLE connection. Close the phone app and retry.
-- **LDAC disconnect:** expected. On tested firmware, an actual LDAC change requires power-cycling/reconnecting the speaker before `qd35_get_status` can verify it.
+- **LDAC disconnect:** expected. On tested firmware, an actual LDAC change invalidated the old Classic bond. Remove that stale host pairing, pair again, then call `qd35_get_status`. The speaker itself recovered without a physical power-cycle.
 - **Audio is not connected:** BLE control and Classic Bluetooth audio are separate links.
 
 See [docs/app-features.md](docs/app-features.md), [docs/protocol.md](docs/protocol.md), and [docs/hardware-validation.md](docs/hardware-validation.md) for the evidence and current limits.

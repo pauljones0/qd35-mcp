@@ -46,12 +46,55 @@ async def test_semantic_changes_verify_readback(service: QD35Service) -> None:
     assert light["applied"] is True
 
 
+class DelayedInputTransport(FakeTransport):
+    def __init__(self) -> None:
+        super().__init__()
+        self.pending_input: tuple[int, int] | None = None
+        self.input_queries_after_set = 0
+
+    async def request(self, opcode: int, payload: bytes = b"", timeout: float = 4) -> bytes:
+        if opcode == c.SET_INPUT:
+            self.pending_input = (payload[0], payload[1])
+            self.input_queries_after_set = 0
+            return b"\x01"
+        if opcode == c.QUERY_INPUT and self.pending_input is not None:
+            self.input_queries_after_set += 1
+            if self.input_queries_after_set == 3:
+                self.input_group, self.input_value = self.pending_input
+                self.pending_input = None
+        return await super().request(opcode, payload, timeout)
+
+
+async def test_input_change_waits_for_delayed_firmware_readback(config: Config) -> None:
+    transport = DelayedInputTransport()
+    service = QD35Service(transport, config)
+
+    result = await service.set_input("aux")
+
+    assert result == {
+        "applied": True,
+        "input": {"group": 2, "value": 2, "name": "aux"},
+    }
+    assert transport.input_queries_after_set == 3
+
+
 async def test_dangerous_operations_are_separately_gated(config: Config) -> None:
     service = QD35Service(FakeTransport(), config)
     with pytest.raises(DangerousWritesDisabled):
         await service.factory_reset()
     enabled = QD35Service(FakeTransport(), replace(config, dangerous_writes_enabled=True))
     assert (await enabled.factory_reset())["sent"] is True
+
+
+async def test_media_control_uses_one_way_command(config: Config) -> None:
+    transport = FakeTransport()
+    service = QD35Service(transport, config)
+
+    result = await service.media_control("pause")
+
+    assert result["sent"] is True
+    assert result["acknowledgement"] is None
+    assert transport.last_media_action == c.MEDIA_ACTIONS["pause"]
 
 
 async def test_rgb_rejects_empty_and_non_hex_values(service: QD35Service) -> None:
@@ -121,7 +164,7 @@ async def test_ldac_ack_then_disconnect_returns_recovery(config: Config) -> None
     result = await service.set_ldac("48khz")
     assert result["applied"] is None
     assert result["bluetooth_restarted"] is True
-    assert "Power-cycle" in result["suggested_action"]
+    assert "pair again" in result["suggested_action"]
 
 
 async def test_simulated_reset_and_power_off_have_real_state_effects(config: Config) -> None:

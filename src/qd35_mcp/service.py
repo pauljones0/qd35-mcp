@@ -155,7 +155,16 @@ class QD35Service:
         if current["group"] != 2:
             raise ProtocolError(f"expected QD35 input group 2, received {current['group']}")
         await self._request(c.SET_INPUT, bytes((2, c.INPUTS[source])))
-        result = parse_input(await self._request(c.QUERY_INPUT))
+        # Firmware 1.3.0 acknowledges immediately but applies the new source
+        # asynchronously (observed at 0.75-1.25 seconds). Poll bounded readback
+        # so a successful change is not reported as a false negative.
+        result = current
+        for attempt in range(9):
+            result = parse_input(await self._request(c.QUERY_INPUT))
+            if result["name"] == source:
+                break
+            if attempt < 8:
+                await asyncio.sleep(0.25)
         return {"applied": result["name"] == source, "input": result}
 
     @serialized_mutation
@@ -260,8 +269,15 @@ class QD35Service:
         action = action.lower()
         if action not in c.MEDIA_ACTIONS:
             raise ValueError(f"action must be one of: {', '.join(c.MEDIA_ACTIONS)}")
-        response = await self._request(c.MEDIA_CONTROL, bytes((c.MEDIA_ACTIONS[action],)))
-        return {"sent": True, "action": action, "acknowledgement": response.hex()}
+        if not self.transport.connected:
+            await self.transport.connect(self.config.device)
+        await self.transport.send(c.MEDIA_CONTROL, bytes((c.MEDIA_ACTIONS[action],)))
+        return {
+            "sent": True,
+            "action": action,
+            "acknowledgement": None,
+            "verification": "fire-and-forget AVRCP command; no C2 reply is emitted",
+        }
 
     @serialized_mutation
     async def sync_clock(self, clock_format: str = "preserve") -> dict[str, object]:
@@ -314,7 +330,8 @@ class QD35Service:
                 "requested_mode": mode,
                 "outcome": "unknown_until_reconnected",
                 "suggested_action": (
-                    "Power-cycle/reconnect the speaker, then call qd35_get_status to verify LDAC."
+                    "Reconnect Classic audio, then call qd35_get_status to verify LDAC. "
+                    "If the old bond is rejected, remove it from the host and pair again."
                 ),
             }
 

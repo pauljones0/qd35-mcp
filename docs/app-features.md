@@ -4,19 +4,19 @@ This inventory combines the model-specific Edifier Connect operation manual, the
 
 | App function | Options/behavior | MCP status |
 |---|---|---|
-| Volume | Linked app/phone/speaker slider; live device range 0–16 | Read live; same-value setter roundtrip observed |
-| Input | Bluetooth, AUX, USB audio | Read live; same-value setter roundtrip observed |
-| EQ preset | Music, Game, Movie, DIY | Read live; same-value setter roundtrip observed |
-| DIY EQ | Six bands: 62, 250, 1k, 4k, 8k, 16k Hz; ±3 dB | Read live; same-value band write observed |
-| Lighting | Effect, RGB/palette, brightness; speed on supported effects | Read live; same-value write observed for seven reported effects |
-| Media | Play, pause, previous, next | Implemented; affects the active Bluetooth player |
+| Volume | Linked app/phone/speaker slider; live device range 0–16 | Changed value and restoration verified live |
+| Input | Bluetooth, AUX, USB audio | All three selections and restoration verified live with delayed readback |
+| EQ preset | Music, Game, Movie, DIY | Music/Game change and restoration verified live |
+| DIY EQ | Six bands: 62, 250, 1k, 4k, 8k, 16k Hz; ±3 dB | Changed band value, DIY activation, and restoration verified live |
+| Lighting | Effect, RGB/palette, brightness; speed on supported effects | Effect, RGB, brightness, speed, and restoration verified live |
+| Media | Play, pause, previous, next | All payloads sent live; play changed playback-state readback; `C2` is one-way |
 | Built-in BGM | 32 app audio tracks across 10 categories, repeat/selection | Not bundled; these are app-local copyrighted media, not BLE-resident tracks |
-| Clock | Sync to host, 12-hour or 24-hour format | Implemented from app command definition |
-| LDAC | 96 kHz, 48/44.1 kHz, disabled | Implemented; Bluetooth restart observed live |
-| Device name/info | Rename; show address and firmware | Identity/info read live; rename is app-confirmed and pending changed-value validation |
-| Bluetooth disconnect | Disconnect Classic audio | Implemented behind dangerous-operation gate; hardware validation pending |
-| Power off | Remote shutdown; no remote power-on | Implemented behind dangerous-operation gate; hardware validation pending |
-| Factory reset | Clear settings and pairing information | Implemented behind dangerous-operation gate; hardware validation pending |
+| Clock | Sync to host, 12-hour or 24-hour format | 24-hour synchronization acknowledged live |
+| LDAC | 96 kHz, 48/44.1 kHz, disabled | off ↔ 48/44.1 kHz verified live; change restarts Bluetooth and required re-pairing on firmware 1.3.0 |
+| Device name/info | Rename; show address and firmware | Changed name and restoration verified live |
+| Bluetooth disconnect | Disconnect Classic audio | Live-verified behind dangerous-operation gate |
+| Power off | Remote shutdown; no remote power-on | Live-verified behind dangerous-operation gate |
+| Factory reset | Clear settings and pairing information | Live-verified with marked settings and fresh pairing |
 | Firmware update | Conditional OTA flow | Deliberately excluded from the agent surface |
 | Manual/store/profile | App navigation and web content | Not speaker controls |
 
