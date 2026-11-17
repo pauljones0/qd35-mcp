@@ -12,8 +12,10 @@ from zoneinfo import ZoneInfo
 from . import constants as c
 from .animations import (
     GeneratedAnimation,
+    build_creative_animation,
     build_diagnostic_animation,
     compile_authored_animation,
+    list_creative_animations,
     list_diagnostic_animations,
 )
 from .config import Config
@@ -339,6 +341,7 @@ class QD35Service:
     async def custom_light_catalog(self) -> dict[str, object]:
         return {
             "official": list_custom_lights(),
+            "creative": list_creative_animations(),
             "diagnostic": list_diagnostic_animations(),
         }
 
@@ -882,6 +885,7 @@ class QD35Service:
             "timing_sweep",
             "fourth_byte_sweep",
             "spiral_color_probe",
+            "spiral_index_probe",
             "spiral_fast_probe",
             "spiral_slow_probe",
         }:
@@ -1120,6 +1124,22 @@ class QD35Service:
     ) -> dict[str, object]:
         """Compile and upload a local, structurally bounded RGB animation."""
         animation = compile_authored_animation(name, frames)
+        return await self.apply_custom_light(
+            animation.name,
+            None,
+            activate,
+            activation_brightness,
+            animation,
+        )
+
+    async def apply_animation_preset(
+        self,
+        preset: str,
+        activate: bool = True,
+        activation_brightness: int | None = None,
+    ) -> dict[str, object]:
+        """Generate and upload a bounded creative animation preset."""
+        animation = build_creative_animation(preset)
         return await self.apply_custom_light(
             animation.name,
             None,

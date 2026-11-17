@@ -143,6 +143,19 @@ async def test_spiral_diagnostic_uses_type_three_and_compatibility_start_id(
     assert transport.custom_light_type == 3
 
 
+async def test_creative_preset_is_generated_locally_and_uploaded(config: Config) -> None:
+    transport = FakeTransport()
+    result = await QD35Service(transport, config).apply_animation_preset(
+        "pac_man", activation_brightness=9
+    )
+    assert result["applied"] is True
+    assert result["preset"] == "pac_man"
+    assert result["generated_animation"]["frames"] == 74
+    assert result["generated_animation"]["light_type"] == 1
+    assert result["bytes_uploaded"] == 74 * 150
+    assert result["lighting"]["effects"][-1]["brightness"] == 9
+
+
 async def test_authored_light_compiles_locally_and_forces_fourth_byte_zero(
     config: Config,
 ) -> None:

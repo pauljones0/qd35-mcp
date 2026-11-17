@@ -19,6 +19,7 @@ The protocol is independently implemented from observed behavior and Edifier Con
 - Install all four official Extended animations (Gradient, Water-drop, Spiral, and Multicolored), with palette support where the app provides it
 - Upload bounded address-mapping, RGB, timing, and fourth-component diagnostic animations for video-assisted reverse engineering
 - Probe Spiral's firmware-generated type-3 motion with bounded color and timing diagnostics
+- Play built-in Pac-Man, comet, rainbow-wave, firefly, and ember animations generated locally
 - Read the calibrated front-view visible-emission position for all 37 wire addresses
 - Compile and upload local RGB animations with 1–102 frames, exactly 37 colors per frame, bounded timing, and no file/URL input
 - Retain and expose unsolicited playback/title/artist events instead of discarding them
@@ -94,6 +95,7 @@ Do not copy that example address unless it is your speaker.
 | `qd35_list_custom_lights` | List official QD35 Extended animations and palettes |
 | `qd35_apply_diagnostic_light` | Upload one low-brightness protocol-calibration animation |
 | `qd35_apply_authored_light` | Compile and upload bounded local RGB frames; byte four is forced to zero |
+| `qd35_apply_animation_preset` | Generate and upload `pac_man`, `comet`, `rainbow_wave`, `fireflies`, or `embers` |
 | `qd35_set_volume` | Set and read back volume |
 | `qd35_set_input` | Select `bluetooth`, `aux`, or `usb` |
 | `qd35_set_eq_preset` | Select `music`, `game`, `movie`, or `diy` |

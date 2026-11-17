@@ -214,6 +214,7 @@ def create_server(
             "timing_sweep",
             "fourth_byte_sweep",
             "spiral_color_probe",
+            "spiral_index_probe",
             "spiral_fast_probe",
             "spiral_slow_probe",
         ],
@@ -235,6 +236,17 @@ def create_server(
         """Compile and upload bounded local RGB frames; no file paths or URLs are accepted."""
         compiled = [(frame.duration_ms, frame.colors) for frame in frames]
         return await call(service.apply_authored_light, name, compiled, activate, brightness)
+
+    @server.tool(
+        annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
+    )
+    async def qd35_apply_animation_preset(
+        preset: Literal["pac_man", "comet", "rainbow_wave", "fireflies", "embers"],
+        brightness: Annotated[int, Field(ge=1, le=100)] = 15,
+        activate: bool = True,
+    ) -> dict[str, object]:
+        """Generate and upload a built-in creative animation with no network or file input."""
+        return await call(service.apply_animation_preset, preset, activate, brightness)
 
     @server.tool(
         annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False, openWorldHint=False)

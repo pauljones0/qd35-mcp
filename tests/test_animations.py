@@ -4,8 +4,10 @@ import pytest
 
 from qd35_mcp.animations import (
     ADDRESS_EMISSION_MAP,
+    DISPLAY_ROUTE,
     FRAME_SIZE,
     LIGHT_COUNT,
+    build_creative_animation,
     build_diagnostic_animation,
     compile_authored_animation,
     encode_frame,
@@ -24,6 +26,7 @@ from qd35_mcp.errors import ProtocolError
         ("timing_sweep", 8),
         ("fourth_byte_sweep", 6),
         ("spiral_color_probe", 1),
+        ("spiral_index_probe", 1),
         ("spiral_fast_probe", 1),
         ("spiral_slow_probe", 1),
     ],
@@ -69,8 +72,49 @@ def test_spiral_probes_use_the_procedural_interpreter() -> None:
     assert color.start_asset_id == 1
     lights = [color.data[offset : offset + 4] for offset in range(2, FRAME_SIZE, 4)]
     assert len(set(lights)) == 6
+    indexed = build_diagnostic_animation("spiral_index_probe")
+    indexed_lights = [indexed.data[offset : offset + 4] for offset in range(2, FRAME_SIZE, 4)]
+    assert len(set(indexed_lights)) == LIGHT_COUNT
+    assert all(light[3] == 0 for light in indexed_lights)
     assert build_diagnostic_animation("spiral_fast_probe").data[:2] == b"\x00\x14"
     assert build_diagnostic_animation("spiral_slow_probe").data[:2] == b"\x01\x90"
+
+
+@pytest.mark.parametrize(
+    ("name", "frames", "duration_ms"),
+    [
+        ("pac_man", 74, 6_660),
+        ("comet", 37, 2_590),
+        ("rainbow_wave", 60, 4_200),
+        ("fireflies", 80, 7_200),
+        ("embers", 72, 7_200),
+    ],
+)
+def test_creative_animation_geometry(name: str, frames: int, duration_ms: int) -> None:
+    animation = build_creative_animation(name)
+    assert animation.frame_count == frames
+    assert animation.nominal_duration_ms == duration_ms
+    assert len(animation.data) <= 15_360
+    assert animation.light_type == 1
+
+
+def test_creative_route_covers_every_address_once() -> None:
+    assert len(DISPLAY_ROUTE) == LIGHT_COUNT
+    assert sorted(DISPLAY_ROUTE) == list(range(LIGHT_COUNT))
+
+
+def test_pac_man_has_head_pellets_and_four_distinct_ghosts() -> None:
+    animation = build_creative_animation("pac_man")
+    first = animation.data[:FRAME_SIZE]
+    lights = [first[offset : offset + 4] for offset in range(2, FRAME_SIZE, 4)]
+    assert lights[DISPLAY_ROUTE[0]] == bytes((255, 224, 0, 0))
+    ghosts = {
+        bytes((255, 24, 24, 0)),
+        bytes((255, 80, 190, 0)),
+        bytes((0, 220, 255, 0)),
+        bytes((255, 126, 28, 0)),
+    }
+    assert ghosts.issubset(set(lights))
 
 
 def test_authored_animation_is_bounded_rgb_only() -> None:

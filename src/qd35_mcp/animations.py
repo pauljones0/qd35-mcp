@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -61,6 +62,49 @@ ADDRESS_EMISSION_MAP: tuple[tuple[float, float], ...] = (
     (51.5, 10.5),
     (62.5, 17.8),
     (64.5, 8.8),
+)
+
+# A visually continuous loop through the measured light-guide centroids. Wire order jumps
+# from the lower-right run to the top of the chamber at address 20; creative chases use this
+# route so motion follows the visible guides instead of that transport discontinuity.
+DISPLAY_ROUTE: tuple[int, ...] = (
+    0,
+    1,
+    2,
+    29,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    28,
+    11,
+    12,
+    13,
+    14,
+    26,
+    27,
+    15,
+    16,
+    23,
+    25,
+    17,
+    18,
+    19,
+    24,
+    22,
+    21,
+    20,
+    36,
+    35,
+    34,
+    33,
+    32,
+    31,
+    30,
 )
 
 
@@ -179,6 +223,34 @@ def _solid(color: Color) -> list[Color]:
     return [color] * LIGHT_COUNT
 
 
+def _route_frame(route_colors: Sequence[Color]) -> list[Color]:
+    if len(route_colors) != LIGHT_COUNT:
+        raise ValueError(f"route frame must contain exactly {LIGHT_COUNT} colors")
+    lights: list[Color] = [(0, 0, 0, 0)] * LIGHT_COUNT
+    for route_index, address in enumerate(DISPLAY_ROUTE):
+        lights[address] = route_colors[route_index]
+    return lights
+
+
+def _hsv_color(hue: float, saturation: float = 1, value: float = 1) -> Color:
+    # Small local implementation avoids adding a runtime dependency for preset generation.
+    hue %= 1
+    sector = int(hue * 6)
+    fraction = hue * 6 - sector
+    p = value * (1 - saturation)
+    q = value * (1 - fraction * saturation)
+    t = value * (1 - (1 - fraction) * saturation)
+    red, green, blue = (
+        (value, t, p),
+        (q, value, p),
+        (p, value, t),
+        (p, q, value),
+        (t, p, value),
+        (value, p, q),
+    )[sector % 6]
+    return round(red * 255), round(green * 255), round(blue * 255), 0
+
+
 def _pixel_chase() -> GeneratedAnimation:
     frames: list[bytes] = []
     for active in range(LIGHT_COUNT):
@@ -290,12 +362,39 @@ def _spiral_color_probe() -> GeneratedAnimation:
         "spiral_color_probe",
         encode_frame(100, lights),
         (
-            "One type-3 procedural record with six repeating address colors; unlike type 1, "
-            "the firmware generates the motion."
+            "One type-3 procedural record with six repeating payload colors; firmware moves "
+            "them through the central-speaker ring and lower light guide."
         ),
         (
-            "Record whether colors move in wire order, a firmware-remapped physical order, "
-            "or remain attached to fixed guides."
+            "Record how 37 payload colors feed the procedural path; uploaded entries, physical "
+            "RGB packages, and visible stopping positions are not one-to-one."
+        ),
+        light_type=3,
+        asset_id=25,
+        start_asset_id=1,
+    )
+
+
+def _spiral_index_probe() -> GeneratedAnimation:
+    # Encode the payload index as three base-four digits. Every slot therefore has a unique,
+    # well-separated RGB value that can be matched back from a color-calibrated recording.
+    levels = (48, 117, 186, 255)
+    lights = [
+        (
+            levels[index & 0x03],
+            levels[(index >> 2) & 0x03],
+            levels[(index >> 4) & 0x03],
+            0,
+        )
+        for index in range(LIGHT_COUNT)
+    ]
+    return GeneratedAnimation(
+        "spiral_index_probe",
+        encode_frame(100, lights),
+        "A type-3 record in which each of the 37 payload slots has a unique RGB code.",
+        (
+            "Film the whole front straight-on for at least 15 seconds without moving the camera; "
+            "nearest-color matching can reveal which payload slots the procedural path consumes."
         ),
         light_type=3,
         asset_id=25,
@@ -327,6 +426,124 @@ def _spiral_slow_probe() -> GeneratedAnimation:
     )
 
 
+def _pac_man() -> GeneratedAnimation:
+    frames: list[bytes] = []
+    ghost_colors: tuple[Color, ...] = (
+        (255, 24, 24, 0),
+        (255, 80, 190, 0),
+        (0, 220, 255, 0),
+        (255, 126, 28, 0),
+    )
+    for step in range(LIGHT_COUNT):
+        for mouth_open in (True, False):
+            route_colors: list[Color] = [(0, 0, 0, 0)] * LIGHT_COUNT
+            # Pellets remain ahead of Pac-Man and disappear behind him until the loop resets.
+            for distance in range(2, LIGHT_COUNT - 4):
+                if distance % 3 == 0:
+                    route_colors[(step + distance) % LIGHT_COUNT] = (42, 52, 64, 0)
+            route_colors[step] = (255, 224 if mouth_open else 168, 0, 0)
+            for ghost_index, distance in enumerate((5, 9, 13, 17)):
+                route_colors[(step - distance) % LIGHT_COUNT] = ghost_colors[ghost_index]
+            frames.append(encode_frame(90, _route_frame(route_colors)))
+    return GeneratedAnimation(
+        "pac_man",
+        b"".join(frames),
+        (
+            "Pac-Man follows the measured light-guide loop, eating dim pellets while four "
+            "colored ghosts chase behind."
+        ),
+        "Look for a yellow chomp pulse, disappearing pellets, and red/pink/cyan/orange ghosts.",
+    )
+
+
+def _comet() -> GeneratedAnimation:
+    frames: list[bytes] = []
+    tail: tuple[Color, ...] = (
+        (255, 255, 255, 0),
+        (80, 235, 255, 0),
+        (24, 130, 255, 0),
+        (8, 56, 180, 0),
+        (2, 18, 70, 0),
+    )
+    for step in range(LIGHT_COUNT):
+        route_colors: list[Color] = [(0, 0, 2, 0)] * LIGHT_COUNT
+        for distance, color in enumerate(tail):
+            route_colors[(step - distance) % LIGHT_COUNT] = color
+        frames.append(encode_frame(70, _route_frame(route_colors)))
+    return GeneratedAnimation(
+        "comet",
+        b"".join(frames),
+        "A bright white/cyan comet with a five-address blue tail follows the visible guide loop.",
+        "Confirm that the head follows a continuous path without the wire-order jump at 19→20.",
+    )
+
+
+def _rainbow_wave() -> GeneratedAnimation:
+    frames: list[bytes] = []
+    frame_count = 60
+    for frame_index in range(frame_count):
+        route_colors = [
+            _hsv_color(route_index / LIGHT_COUNT + frame_index / frame_count, 0.9, 1)
+            for route_index in range(LIGHT_COUNT)
+        ]
+        frames.append(encode_frame(70, _route_frame(route_colors)))
+    return GeneratedAnimation(
+        "rainbow_wave",
+        b"".join(frames),
+        "A continuous rainbow rotates around the measured light-guide loop.",
+        "Check for smooth color motion and optical blending at adjacent guides.",
+    )
+
+
+def _fireflies() -> GeneratedAnimation:
+    frames: list[bytes] = []
+    frame_count = 80
+    for frame_index in range(frame_count):
+        lights: list[Color] = []
+        for address in range(LIGHT_COUNT):
+            phase = address * 1.731 + frame_index * 0.31
+            pulse = max(0.0, math.sin(phase)) ** 8
+            shimmer = max(0.0, math.sin(phase * 0.37 + frame_index * 0.09))
+            green = round(3 + 210 * pulse)
+            red = round(1 + 105 * pulse)
+            blue = round(4 + 25 * shimmer)
+            lights.append((red, green, blue, 0))
+        frames.append(encode_frame(90, lights))
+    return GeneratedAnimation(
+        "fireflies",
+        b"".join(frames),
+        "Independent warm-green fireflies pulse asynchronously across all 37 addresses.",
+        "Watch for organic twinkles rather than a visible repeating chase.",
+    )
+
+
+def _embers() -> GeneratedAnimation:
+    frames: list[bytes] = []
+    frame_count = 72
+    for frame_index in range(frame_count):
+        lights: list[Color] = []
+        for address in range(LIGHT_COUNT):
+            wave = (
+                math.sin(frame_index * 0.23 + address * 1.17)
+                + math.sin(frame_index * 0.11 - address * 0.63)
+                + 2
+            ) / 4
+            flare = max(0.0, math.sin(frame_index * 0.41 + address * 2.03)) ** 6
+            red = round(80 + 175 * min(1, wave + flare * 0.35))
+            green = round(4 + 74 * wave + 54 * flare)
+            lights.append((red, green, 0, 0))
+        frames.append(encode_frame(100, lights))
+    return GeneratedAnimation(
+        "embers",
+        b"".join(frames),
+        "A low, asynchronous red-orange ember bed with occasional brighter flares.",
+        (
+            "Use low global brightness and verify that the flicker feels irregular rather "
+            "than strobed."
+        ),
+    )
+
+
 _BUILDERS = {
     "pixel_chase": _pixel_chase,
     "address_mapper": _address_mapper,
@@ -334,8 +551,17 @@ _BUILDERS = {
     "timing_sweep": _timing_sweep,
     "fourth_byte_sweep": _fourth_byte_sweep,
     "spiral_color_probe": _spiral_color_probe,
+    "spiral_index_probe": _spiral_index_probe,
     "spiral_fast_probe": _spiral_fast_probe,
     "spiral_slow_probe": _spiral_slow_probe,
+}
+
+_CREATIVE_BUILDERS = {
+    "pac_man": _pac_man,
+    "comet": _comet,
+    "rainbow_wave": _rainbow_wave,
+    "fireflies": _fireflies,
+    "embers": _embers,
 }
 
 
@@ -379,5 +605,25 @@ def build_diagnostic_animation(name: str) -> GeneratedAnimation:
         animation = _BUILDERS[normalized]()
     except KeyError as exc:
         raise ValueError(f"diagnostic animation must be one of: {', '.join(_BUILDERS)}") from exc
+    validate_animation(animation.data)
+    return animation
+
+
+def list_creative_animations() -> dict[str, object]:
+    animations = [builder() for builder in _CREATIVE_BUILDERS.values()]
+    return {
+        "animations": [animation.to_dict() for animation in animations],
+        "route": list(DISPLAY_ROUTE),
+        "route_basis": "pre-SLAM visible-emission map; independent of experimental 3D poses",
+    }
+
+
+def build_creative_animation(name: str) -> GeneratedAnimation:
+    normalized = name.strip().lower().replace("-", "_")
+    try:
+        animation = _CREATIVE_BUILDERS[normalized]()
+    except KeyError as exc:
+        choices = ", ".join(_CREATIVE_BUILDERS)
+        raise ValueError(f"creative animation must be one of: {choices}") from exc
     validate_animation(animation.data)
     return animation
