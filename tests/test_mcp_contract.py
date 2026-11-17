@@ -57,6 +57,7 @@ async def test_real_stdio_server_contract() -> None:
             assert "qd35_create_sunrise_alarm" in names
             assert "qd35_list_alarms" in names
             assert "qd35_set_alarm_audio_keepalive" in names
+            assert "qd35_set_timezone" in names
             assert "qd35_get_events" in names
             assert "qd35_factory_reset" in names
 

@@ -39,9 +39,14 @@ class FakeService:
         self.volumes: list[int] = []
         self.disconnected = False
 
-    async def sync_clock(self, value: str) -> dict[str, object]:
+    async def sync_clock(self, value: str, timezone: str) -> dict[str, object]:
         self.clock_formats.append(value)
+        assert timezone == "America/Regina"
         return {"acknowledged": True}
+
+    async def set_timezone(self, value: str, sync_now: bool) -> dict[str, object]:
+        assert sync_now is False
+        return {"timezone": value, "persisted": True}
 
     async def set_input(self, value: str) -> dict[str, object]:
         self.inputs.append(value)

@@ -31,6 +31,8 @@ class Config:
     alarm_unit_dir: str | None = None
     alarm_remote_audio: bool = False
     alarm_allowed_hosts: tuple[str, ...] = ()
+    timezone: str | None = None
+    timezone_state_path: str | None = None
 
     def __post_init__(self) -> None:
         if self.transport not in {"bleak", "fake"}:
@@ -62,4 +64,7 @@ class Config:
                 for host in os.getenv("QD35_ALARM_ALLOWED_HOSTS", "").split(",")
                 if host.strip()
             ),
+            timezone=(os.getenv("QD35_TIMEZONE") or "").strip() or None,
+            timezone_state_path=(os.getenv("QD35_TIMEZONE_STATE_PATH") or "").strip()
+            or None,
         )

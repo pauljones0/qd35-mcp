@@ -88,7 +88,8 @@ async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[st
     audio_start = max(0, duration - alarm.audio_fade_minutes * 60)
     started = time.monotonic()
     try:
-        await service.sync_clock(alarm.clock_format)
+        await service.set_timezone(alarm.timezone, sync_now=False)
+        await service.sync_clock(alarm.clock_format, alarm.timezone)
         await service.set_input("bluetooth")
         while True:
             elapsed = min(duration, time.monotonic() - started)

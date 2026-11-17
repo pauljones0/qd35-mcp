@@ -225,8 +225,19 @@ def create_server(
     async def qd35_sync_clock(
         clock_format: Literal["preserve", "12h", "24h"] = "preserve",
     ) -> dict[str, object]:
-        """Set the speaker clock; firmware acknowledges success but offers no clock readback."""
+        """Sync using the MCP's persistent timezone; firmware offers no clock readback."""
         return await call(service.sync_clock, clock_format)
+
+    @server.tool(
+        annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
+    )
+    async def qd35_set_timezone(
+        timezone: str,
+        clock_format: Literal["preserve", "12h", "24h"] = "preserve",
+        sync_now: bool = True,
+    ) -> dict[str, object]:
+        """Persist an IANA timezone and optionally synchronize the speaker immediately."""
+        return await call(service.set_timezone, timezone, clock_format, sync_now)
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
     async def qd35_list_alarms() -> dict[str, object]:

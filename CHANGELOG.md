@@ -35,4 +35,6 @@
   runner smoke test, and low-volume official SomaFM stream playback.
 - Live keepalive fault injection uncovered BlueZ's ephemeral `Paired: no` transition after a
   host disconnect; the reconnect loop now ignores that misleading gate and restored A2DP in 34s.
+- Persistent IANA timezone resolution prevents UTC containers from shifting the speaker clock;
+  alarms reinforce their named zone and clock results report the zone actually serialized.
 

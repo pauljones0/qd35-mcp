@@ -66,6 +66,8 @@ The Classic QD35 endpoint was paired and trusted, and PipeWire exposed its 48 kH
 
 The overnight keepalive was then tested by deliberately dropping only the host's Classic connection. BlueZ changed the device's ephemeral `Paired` state to `no`; an initial implementation incorrectly treated that as a reason not to reconnect. After removing that assumption, the enabled service reconnected, re-established pairing, and restored the A2DP endpoint in 34 seconds without opcode `CD`, pairing-record removal, or speaker power cycling.
 
+Clock validation also exposed a host-context error: the coding container used UTC while the speaker owner is in Saskatoon. Timezone resolution is now persistent and IANA-based rather than inherited blindly from the process. `America/Regina` was stored mode 0600 and a fresh process synchronized the physical speaker at 22:53:48 CST with 12-hour format; firmware returned success `01`.
+
 ## Disruptive-operation validation
 
 The user explicitly authorized these tests:

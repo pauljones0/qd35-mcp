@@ -4,7 +4,9 @@ import asyncio
 import re
 from datetime import datetime
 from functools import wraps
+from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from . import constants as c
 from .animations import build_diagnostic_animation, list_diagnostic_animations
@@ -39,6 +41,12 @@ from .protocol import (
     parse_text_event,
     parse_volume,
 )
+from .timezones import (
+    default_timezone_state_path,
+    persist_timezone,
+    resolve_timezone,
+    validate_timezone,
+)
 from .transport.base import Transport
 
 
@@ -71,6 +79,12 @@ class QD35Service:
         self._transaction_active = False
         self._transaction_identity: tuple[str, int] | None = None
         self._transaction_mutated = False
+        self._timezone_state_path = (
+            Path(config.timezone_state_path).expanduser()
+            if config.timezone_state_path
+            else default_timezone_state_path()
+        )
+        self._timezone = resolve_timezone(config.timezone, self._timezone_state_path)
 
     async def discover(self, timeout: float | None = None) -> dict[str, object]:
         timeout_value = self.config.scan_timeout if timeout is None else timeout
@@ -245,6 +259,7 @@ class QD35Service:
             "audio_status": audio_status,
             "custom_light": custom_light,
             "light_timer": light_timer,
+            "timezone": self._timezone,
             "observed_at": datetime.now().astimezone().isoformat(),
         }
 
@@ -572,11 +587,17 @@ class QD35Service:
         }
 
     @serialized_mutation
-    async def sync_clock(self, clock_format: str = "preserve") -> dict[str, object]:
+    async def sync_clock(
+        self,
+        clock_format: str = "preserve",
+        timezone: str | None = None,
+    ) -> dict[str, object]:
         self._write_allowed()
         clock_format = clock_format.strip().lower()
         if clock_format not in {"preserve", "12h", "24h"}:
             raise ValueError("clock_format must be preserve, 12h, or 24h")
+        timezone_name = validate_timezone(timezone or self._timezone)
+        zone = ZoneInfo(timezone_name)
         capabilities = parse_capabilities(await self._request(c.QUERY_CAPABILITIES))
         support = capabilities["supported"]
         if not support["clock_hms_format"] and not support["clock_unix_seconds"]:
@@ -586,7 +607,7 @@ class QD35Service:
                 raise ValueError(
                     "this firmware's Unix-seconds clock dialect cannot select 12h/24h format"
                 )
-            now = datetime.now().astimezone()
+            now = datetime.now().astimezone(zone)
             payload = int(now.timestamp()).to_bytes(4, "big")
             response = await self._request(c.SYNC_CLOCK, payload)
             if response != b"\x01":
@@ -599,13 +620,14 @@ class QD35Service:
                 "applied": None,
                 "time": now.isoformat(),
                 "format": "preserve",
+                "timezone": timezone_name,
                 "dialect": "unix_seconds",
                 "response": response.hex(),
                 "attempts": 1,
                 "verification": "speaker returned success; this protocol has no clock readback",
             }
         for attempt in range(1, 3):
-            now = datetime.now().astimezone()
+            now = datetime.now().astimezone(zone)
             if clock_format == "preserve":
                 payload = bytes((now.hour, now.minute, now.second, 0))
             elif clock_format == "12h":
@@ -622,6 +644,7 @@ class QD35Service:
                     "applied": None,
                     "time": now.isoformat(),
                     "format": clock_format,
+                    "timezone": timezone_name,
                     "dialect": "hour_minute_second_format",
                     "response": response.hex(),
                     "attempts": attempt,
@@ -632,6 +655,27 @@ class QD35Service:
                     f"clock sync returned unexpected response {response.hex() or '<empty>'}"
                 )
         raise ProtocolError("speaker requested clock resynchronization twice")
+
+    async def set_timezone(
+        self,
+        timezone: str,
+        clock_format: str = "preserve",
+        sync_now: bool = True,
+    ) -> dict[str, object]:
+        normalized = await asyncio.to_thread(
+            persist_timezone, timezone, self._timezone_state_path
+        )
+        previous = self._timezone
+        self._timezone = normalized
+        result: dict[str, object] = {
+            "timezone": normalized,
+            "previous_timezone": previous,
+            "persisted": True,
+            "state_path": str(self._timezone_state_path),
+        }
+        if sync_now:
+            result["clock"] = await self.sync_clock(clock_format, normalized)
+        return result
 
     @serialized_mutation
     async def set_ldac(self, mode: str) -> dict[str, object]:

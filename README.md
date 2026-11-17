@@ -101,6 +101,7 @@ Do not copy that example address unless it is your speaker.
 | `qd35_apply_custom_light` | Download, verify, transfer, read back, and optionally activate an official Extended animation |
 | `qd35_media_control` | `play`, `pause`, `next`, or `previous` |
 | `qd35_sync_clock` | Sync time and select `preserve`, `12h`, or `24h` |
+| `qd35_set_timezone` | Persist an IANA timezone and optionally synchronize immediately |
 | `qd35_list_alarms` | List persistent sunrise alarms and timer/runtime state |
 | `qd35_create_sunrise_alarm` | Install a timezone-aware, reboot-persistent light/audio alarm |
 | `qd35_run_alarm_now` | Start one installed alarm immediately |
@@ -130,13 +131,15 @@ Setting tools read state back when the protocol allows it. Media `C2` is one-way
 | `QD35_ENABLE_DANGEROUS` | `0` | Enable reset, power-off, and audio disconnect |
 | `QD35_SCAN_TIMEOUT` | `8` | Discovery time in seconds |
 | `QD35_REQUEST_TIMEOUT` | `4` | Per-command response timeout |
+| `QD35_TIMEZONE` | persisted/system | Override automatic IANA timezone resolution |
+| `QD35_TIMEZONE_STATE_PATH` | XDG state dir | Override the mode-0600 persistent timezone file |
 | `QD35_ALARM_ALLOW_REMOTE_AUDIO` | `0` | Permit public HTTP(S) alarm streams after public-IP validation |
 | `QD35_ALARM_ALLOWED_HOSTS` | unset | Comma-separated exact host allowlist for remote alarm streams |
 | `QD35_ALARM_MEDIA_DIR` | unset | Directory containing allowed local alarm audio files |
 | `QD35_ALARM_STATE_PATH` | XDG state dir | Override persistent alarm JSON location |
 | `QD35_ALARM_UNIT_DIR` | XDG user units | Override systemd user-unit directory, primarily for tests |
 
-Logs go to stderr; stdout remains reserved for MCP messages.
+The first timezone is resolved from `QD35_TIMEZONE`, then the persisted MCP state, then the operating system. `qd35_set_timezone` updates that persistent state so container or service-manager timezone differences cannot silently shift future speaker clock syncs. Alarm creation also persists its named timezone. Logs go to stderr; stdout remains reserved for MCP messages.
 
 ## Troubleshooting
 

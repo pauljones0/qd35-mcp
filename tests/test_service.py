@@ -29,6 +29,7 @@ def config() -> Config:
         dangerous_writes_enabled=False,
         request_timeout=1,
         scan_timeout=1,
+        timezone="UTC",
     )
 
 
@@ -439,6 +440,27 @@ async def test_clock_retries_one_resynchronization_request(config: Config) -> No
     assert result["applied"] is None
     assert result["attempts"] == 2
     assert transport.clock_calls == 2
+
+
+async def test_persistent_timezone_controls_clock_without_process_tz(
+    config: Config,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(service_module, "datetime", FixedDatetime)
+    configured = replace(
+        config,
+        timezone=None,
+        timezone_state_path=str(tmp_path / "timezone"),
+    )
+    service = QD35Service(FakeTransport(), configured)
+    result = await service.set_timezone("America/Regina", "12h")
+    assert result["timezone"] == "America/Regina"
+    assert result["clock"]["timezone"] == "America/Regina"
+    assert service.transport.last_clock_payload == bytes((7, 4, 5, 1, 0))
+
+    restarted = QD35Service(FakeTransport(), configured)
+    assert (await restarted.status())["timezone"] == "America/Regina"
 
 
 async def test_rename_rejects_control_characters(service: QD35Service) -> None:

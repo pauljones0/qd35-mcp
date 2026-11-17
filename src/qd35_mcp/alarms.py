@@ -369,6 +369,7 @@ class AlarmManager:
         if not 0 <= target_speaker_volume <= 16:
             raise ValueError("target_speaker_volume must be between 0 and 16")
         source = validate_audio_source(audio_source, self.config)
+        await self.service.set_timezone(timezone, sync_now=False)
         status = await self.service.status()
         device = status["device"]
         classic = status["classic_address"]

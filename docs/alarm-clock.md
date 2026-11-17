@@ -48,3 +48,5 @@ start Groove Salad during the final 10 minutes, and fade speaker volume to 8.
 ```
 
 The clock protocol returns only a success acknowledgement; it has no time readback. Audio requires the host to remain powered on with the user systemd manager, BlueZ, PipeWire, network, and `mpv` available.
+
+The MCP persists the alarm's IANA timezone separately from the host process timezone. Ordinary `qd35_sync_clock` calls reuse that persisted zone, so a UTC container cannot overwrite a speaker configured for `America/Regina`. `QD35_TIMEZONE` remains an explicit operator override.
