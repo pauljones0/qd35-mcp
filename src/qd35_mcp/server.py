@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Annotated
+from contextlib import asynccontextmanager
+from typing import Annotated, Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -26,6 +27,14 @@ def create_service(config: Config | None = None) -> QD35Service:
 
 def create_server(service: QD35Service | None = None) -> MCPServer:
     service = service or create_service()
+
+    @asynccontextmanager
+    async def lifespan(_server: MCPServer):
+        try:
+            yield {}
+        finally:
+            await service.disconnect()
+
     server = MCPServer(
         name="qd35-mcp",
         title="Edifier QD35",
@@ -35,6 +44,7 @@ def create_server(service: QD35Service | None = None) -> MCPServer:
             "Call qd35_get_status before changing settings. Prefer one semantic change per call, "
             "check the returned applied field, and never assume a disconnected write succeeded."
         ),
+        lifespan=lifespan,
     )
 
     async def call(method: object, *args: object, **kwargs: object) -> dict[str, object]:
@@ -63,21 +73,27 @@ def create_server(service: QD35Service | None = None) -> MCPServer:
     @server.tool(
         annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
     )
-    async def qd35_set_volume(level: int) -> dict[str, object]:
+    async def qd35_set_volume(
+        level: Annotated[int, Field(ge=0, le=255)],
+    ) -> dict[str, object]:
         """Set volume using the device-reported range (QD35 firmware 1.3.0 reports 0-16)."""
         return await call(service.set_volume, level)
 
     @server.tool(
         annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
     )
-    async def qd35_set_input(source: str) -> dict[str, object]:
+    async def qd35_set_input(
+        source: Literal["bluetooth", "aux", "usb"],
+    ) -> dict[str, object]:
         """Select bluetooth, aux, or usb input and verify by readback."""
         return await call(service.set_input, source)
 
     @server.tool(
         annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
     )
-    async def qd35_set_eq_preset(preset: str) -> dict[str, object]:
+    async def qd35_set_eq_preset(
+        preset: Literal["music", "game", "movie", "diy"],
+    ) -> dict[str, object]:
         """Select music, game, movie, or diy EQ and verify by readback."""
         return await call(service.set_eq_preset, preset)
 
@@ -95,34 +111,50 @@ def create_server(service: QD35Service | None = None) -> MCPServer:
         annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
     )
     async def qd35_set_light(
-        effect: str | None = None,
+        effect: Literal[
+            "ambient",
+            "magic_tides",
+            "shooting_star",
+            "breathing",
+            "tempo_emo",
+            "static",
+            "extended",
+        ]
+        | None = None,
         rgb: Annotated[str | None, Field(pattern=r"^#?[0-9A-Fa-f]{6}$")] = None,
+        color_mode: Literal["light", "deep", "off", "on"] | None = None,
         brightness: Annotated[int | None, Field(ge=0, le=100)] = None,
         speed: Annotated[int | None, Field(ge=1, le=10)] = None,
         enabled: bool | None = None,
     ) -> dict[str, object]:
-        """Change a live-reported light effect, RGB, brightness, speed, or on/off state."""
-        return await call(service.set_light, effect, rgb, brightness, speed, enabled)
+        """Change lighting with effect-specific RGB or named color modes."""
+        return await call(service.set_light, effect, rgb, color_mode, brightness, speed, enabled)
 
     @server.tool(
         annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False, openWorldHint=False)
     )
-    async def qd35_media_control(action: str) -> dict[str, object]:
-        """Send play, pause, next, or previous to the active Bluetooth player."""
+    async def qd35_media_control(
+        action: Literal["play", "pause", "next", "previous"],
+    ) -> dict[str, object]:
+        """Control media and report C3 playing-state readback when it can verify the action."""
         return await call(service.media_control, action)
 
     @server.tool(
-        annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
+        annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False, openWorldHint=False)
     )
-    async def qd35_sync_clock(clock_format: str = "preserve") -> dict[str, object]:
-        """Set the speaker clock from this computer and optionally select preserve, 12h, or 24h."""
+    async def qd35_sync_clock(
+        clock_format: Literal["preserve", "12h", "24h"] = "preserve",
+    ) -> dict[str, object]:
+        """Set the speaker clock; firmware acknowledges success but offers no clock readback."""
         return await call(service.sync_clock, clock_format)
 
     @server.tool(
         annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
     )
-    async def qd35_set_ldac(mode: str) -> dict[str, object]:
-        """Set LDAC; a change restarts Bluetooth and may require a power cycle to verify."""
+    async def qd35_set_ldac(
+        mode: Literal["off", "48khz", "96khz"],
+    ) -> dict[str, object]:
+        """Set LDAC; a change restarts Bluetooth and may require re-pairing to verify."""
         return await call(service.set_ldac, mode)
 
     @server.tool(

@@ -5,7 +5,7 @@ import bleak
 import pytest
 
 from qd35_mcp import constants as c
-from qd35_mcp.errors import RequestTimeout, TransportError
+from qd35_mcp.errors import OutcomeUnknown, ProtocolError, RequestTimeout, TransportError
 from qd35_mcp.transport.base import DeviceCandidate
 from qd35_mcp.transport.bleak import BleakTransport
 
@@ -20,6 +20,7 @@ def reply(opcode: int, payload: bytes) -> bytearray:
 class MockClient:
     instances: list["MockClient"] = []
     fail_notify = False
+    fail_write = False
     auto_reply = False
     ready_event: asyncio.Event
 
@@ -48,6 +49,8 @@ class MockClient:
         self.disconnected_callback(self)
 
     async def write_gatt_char(self, _uuid: str, packet: bytes, response: bool = False) -> None:
+        if self.fail_write:
+            raise OSError("injected write failure")
         self.writes.append(packet)
         if self.auto_reply and self.notification_callback:
             self.notification_callback(None, reply(packet[2], b"\x10\x06"))
@@ -57,11 +60,12 @@ class MockClient:
 def transport(monkeypatch: pytest.MonkeyPatch) -> BleakTransport:
     MockClient.instances = []
     MockClient.fail_notify = False
+    MockClient.fail_write = False
     MockClient.auto_reply = False
     MockClient.ready_event = asyncio.Event()
     monkeypatch.setattr(bleak, "BleakClient", MockClient)
     result = BleakTransport(scan_timeout=0.01)
-    device = SimpleNamespace(address="64:68:70:64:37:0D", name=None)
+    device = SimpleNamespace(address="AA:BB:CC:DD:EE:01", name=None)
     candidate = DeviceCandidate(
         address=device.address,
         name=None,
@@ -126,6 +130,27 @@ async def test_timeout_invalidates_session_before_same_opcode_retry(
     assert len(MockClient.instances) == 2
 
 
+async def test_mutating_timeout_is_unknown_even_when_connection_stays_up(
+    transport: BleakTransport,
+) -> None:
+    with pytest.raises(OutcomeUnknown, match="write outcome unknown"):
+        await transport.request(c.SET_VOLUME, b"\x08", timeout=0.01)
+    assert transport.connected is False
+
+
+async def test_malformed_mutating_reply_is_unknown(transport: BleakTransport) -> None:
+    await transport.connect()
+    client = MockClient.instances[0]
+    task = asyncio.create_task(transport.request(c.SET_VOLUME, b"\x08", timeout=1))
+    await asyncio.sleep(0)
+    corrupt = reply(c.SET_VOLUME, b"\x01")
+    corrupt[-1] ^= 0xFF
+    client.notification_callback(None, corrupt)
+    with pytest.raises(OutcomeUnknown, match="invalid confirmation"):
+        await task
+    assert transport.connected is False
+
+
 async def test_cancelled_request_invalidates_session(transport: BleakTransport) -> None:
     task = asyncio.create_task(transport.request(c.QUERY_VOLUME, timeout=5))
     await MockClient.ready_event.wait()
@@ -147,13 +172,41 @@ async def test_one_way_send_does_not_wait_for_notification(
     assert MockClient.instances[0].writes[0][5] == 1
 
 
+async def test_mutating_write_failure_is_unknown_and_invalidates_session(
+    transport: BleakTransport,
+) -> None:
+    await transport.connect()
+    MockClient.fail_write = True
+    with pytest.raises(OutcomeUnknown, match="outcome is unknown"):
+        await transport.request(c.SET_VOLUME, b"\x08")
+    assert transport.connected is False
+
+
+async def test_query_write_failure_is_transport_error_and_invalidates_session(
+    transport: BleakTransport,
+) -> None:
+    await transport.connect()
+    MockClient.fail_write = True
+    with pytest.raises(TransportError, match="write failed"):
+        await transport.request(c.QUERY_VOLUME)
+    assert transport.connected is False
+
+
+async def test_notification_queue_is_bounded(transport: BleakTransport) -> None:
+    await transport.connect()
+    callback = MockClient.instances[0].notification_callback
+    for value in range(300):
+        callback(None, reply(c.QUERY_VOLUME, bytes((16, value % 17))))
+    assert transport._queue.qsize() == transport._NOTIFICATION_QUEUE_LIMIT
+
+
 async def test_scan_filters_in_process_without_bluez_uuid_filter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict[str, object]] = []
-    device = SimpleNamespace(address="64:68:70:64:37:0D", name=None)
+    device = SimpleNamespace(address="AA:BB:CC:DD:EE:01", name=None)
     advertisement = SimpleNamespace(
-        manufacturer_data={c.EDIFIER_COMPANY_ID: b"dhvd7\r\x02\x00"},
+        manufacturer_data={c.EDIFIER_COMPANY_ID: bytes.fromhex("aabbccddeeff0200")},
         local_name=None,
         rssi=-55,
         service_uuids=[c.SEARCH_UUID],
@@ -171,3 +224,43 @@ async def test_scan_filters_in_process_without_bluez_uuid_filter(
     assert len(result) == 1
     assert result[0].address == device.address
     assert calls == [{"timeout": 0.01, "return_adv": True, "adapter": "hci0"}]
+
+
+async def test_scan_rejects_uuid_only_spoof(monkeypatch: pytest.MonkeyPatch) -> None:
+    device = SimpleNamespace(address="AA:BB:CC:DD:EE:02", name="not-edifier")
+    advertisement = SimpleNamespace(
+        manufacturer_data={},
+        local_name="not-edifier",
+        rssi=-30,
+        service_uuids=[c.SEARCH_UUID],
+    )
+
+    class MockScanner:
+        @staticmethod
+        async def discover(**_kwargs: object) -> dict[str, tuple[object, object]]:
+            return {device.address: (device, advertisement)}
+
+    monkeypatch.setattr(bleak, "BleakScanner", MockScanner)
+    assert await BleakTransport().discover(0.01) == []
+
+
+async def test_connect_rejects_legacy_framing_version(
+    transport: BleakTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    device = SimpleNamespace(address="AA:BB:CC:DD:EE:01", name=None)
+    legacy = DeviceCandidate(
+        address=device.address,
+        name=None,
+        rssi=-40,
+        manufacturer_id=c.EDIFIER_COMPANY_ID,
+        service_uuids=(c.SEARCH_UUID,),
+        protocol_version=1,
+        encryption_selector=0,
+    )
+
+    async def scan(_timeout: float) -> list[tuple[object, object, DeviceCandidate]]:
+        return [(device, object(), legacy)]
+
+    monkeypatch.setattr(transport, "_scan", scan)
+    with pytest.raises(ProtocolError, match="framing version 1"):
+        await transport.connect()

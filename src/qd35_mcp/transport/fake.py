@@ -34,6 +34,7 @@ class FakeTransport(Transport):
     def __init__(self) -> None:
         self._connected = False
         self.powered = True
+        self.audio_connected = True
         self.volume = 6
         self.maximum = 16
         self.input_group = 2
@@ -41,6 +42,8 @@ class FakeTransport(Transport):
         self.eq_preset = 0
         self.ldac = 0
         self.last_media_action: int | None = None
+        self.playback_state = 3
+        self.last_clock_payload: bytes | None = None
         self.name = "EDIFIER QD35 (simulated)"
         self.firmware = bytes((1, 3, 0))
         self.light_group = 1
@@ -48,7 +51,7 @@ class FakeTransport(Transport):
         self.light_records = self._default_light_records()
         self.bands = self._default_bands()
         self.device = DeviceCandidate(
-            address="FA:KE:QD:35:00:01",
+            address="FA:CE:D3:50:00:01",
             name=self.name,
             rssi=-42,
             manufacturer_id=c.EDIFIER_COMPANY_ID,
@@ -82,6 +85,10 @@ class FakeTransport(Transport):
             await self.connect()
         if opcode == c.MEDIA_CONTROL:
             self.last_media_action = payload[0]
+            if payload[0] == c.MEDIA_ACTIONS["play"]:
+                self.playback_state = 0x0D
+            elif payload[0] == c.MEDIA_ACTIONS["pause"]:
+                self.playback_state = 3
 
     async def request(self, opcode: int, payload: bytes = b"", timeout: float = 4) -> bytes:
         if not self.powered:
@@ -115,9 +122,13 @@ class FakeTransport(Transport):
         if opcode == c.SET_LIGHT:
             self.light_group, self.light_selected = payload[:2]
             self.light_records[self.light_selected] = list(payload[1:])
+            for record in self.light_records.values():
+                record[4] = payload[5]
             return payload
         if opcode == c.QUERY_LDAC:
             return bytes((self.ldac,))
+        if opcode == c.QUERY_PLAYBACK:
+            return bytes((self.playback_state,))
         if opcode == c.SET_LDAC:
             self.ldac = payload[0]
             self._connected = False
@@ -130,14 +141,17 @@ class FakeTransport(Transport):
             self.name = payload.decode()
             return b"\x01"
         if opcode == c.QUERY_ADDRESS:
-            return bytes.fromhex("64687664370d")
+            return bytes.fromhex("aabbccddeeff")
         if opcode == c.QUERY_CAPABILITIES:
             return bytes.fromhex("0000010401010100000001010a0c0a00002004830401")
         if opcode == c.POWER_OFF:
             self.powered = False
+            self.audio_connected = False
             self._connected = False
             return b"\x01"
         if opcode == c.FACTORY_RESET:
+            self.audio_connected = False
+            self._connected = False
             self.volume = 6
             self.input_group = 2
             self.input_value = 1
@@ -148,7 +162,13 @@ class FakeTransport(Transport):
             self.light_selected = 4
             self.light_records = self._default_light_records()
             self.bands = self._default_bands()
+            self.playback_state = 3
             return b"\x01"
-        if opcode in {c.SYNC_CLOCK, c.DISCONNECT_AUDIO}:
+        if opcode == c.SYNC_CLOCK:
+            self.last_clock_payload = payload
+            return b"\x01"
+        if opcode == c.DISCONNECT_AUDIO:
+            self.audio_connected = False
+            self._connected = False
             return b"\x01"
         return b""

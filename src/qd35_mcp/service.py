@@ -16,12 +16,14 @@ from .errors import (
     WritesDisabled,
 )
 from .protocol import (
+    parse_address,
     parse_eq,
     parse_eq_preset,
     parse_firmware,
     parse_input,
     parse_ldac,
     parse_light,
+    parse_playback,
     parse_volume,
 )
 from .transport.base import Transport
@@ -45,7 +47,10 @@ class QD35Service:
         self._mutation_lock = asyncio.Lock()
 
     async def discover(self, timeout: float | None = None) -> dict[str, object]:
-        devices = await self.transport.discover(timeout or self.config.scan_timeout)
+        timeout_value = self.config.scan_timeout if timeout is None else timeout
+        if not 0 < timeout_value <= 300:
+            raise ValueError("timeout must be greater than 0 and at most 300 seconds")
+        devices = await self.transport.discover(timeout_value)
         return {"devices": [device.to_dict() for device in devices], "count": len(devices)}
 
     async def ensure_connected(self) -> dict[str, object]:
@@ -86,9 +91,10 @@ class QD35Service:
         eq = await read(c.QUERY_EQ, parse_eq)
         lighting = await read(c.QUERY_LIGHT, parse_light)
         ldac = await read(c.QUERY_LDAC, parse_ldac)
+        playback = await read(c.QUERY_PLAYBACK, parse_playback)
         firmware = await read(c.QUERY_FIRMWARE, parse_firmware)
         name = await read(c.QUERY_NAME, lambda value: value.decode("utf-8", "replace"))
-        address = await read(c.QUERY_ADDRESS, lambda value: ":".join(f"{b:02X}" for b in value))
+        address = await read(c.QUERY_ADDRESS, parse_address)
         return {
             "device": device,
             "name": name,
@@ -100,6 +106,7 @@ class QD35Service:
             "custom_eq": eq,
             "lighting": lighting,
             "ldac": ldac,
+            "playback": playback,
             "observed_at": datetime.now().astimezone().isoformat(),
         }
 
@@ -148,7 +155,7 @@ class QD35Service:
     @serialized_mutation
     async def set_input(self, source: str) -> dict[str, object]:
         self._write_allowed()
-        source = source.lower()
+        source = source.strip().lower()
         if source not in c.INPUTS:
             raise ValueError(f"source must be one of: {', '.join(c.INPUTS)}")
         current = parse_input(await self._request(c.QUERY_INPUT))
@@ -170,7 +177,7 @@ class QD35Service:
     @serialized_mutation
     async def set_eq_preset(self, preset: str) -> dict[str, object]:
         self._write_allowed()
-        preset = preset.lower()
+        preset = preset.strip().lower()
         if preset not in c.EQ_PRESETS:
             raise ValueError(f"preset must be one of: {', '.join(c.EQ_PRESETS)}")
         await self._request(c.SET_EQ_PRESET, bytes((c.EQ_PRESETS[preset],)))
@@ -193,7 +200,9 @@ class QD35Service:
         await self._request(c.SET_EQ, payload)
         await self._request(c.SET_EQ_PRESET, bytes((c.EQ_PRESETS["diy"],)))
         result = parse_eq(await self._request(c.QUERY_EQ))
-        updated = result["bands"][band]
+        updated = next((item for item in result["bands"] if item["index"] == band), None)
+        if updated is None:
+            raise ProtocolError(f"EQ readback omitted band {band}")
         active_preset = parse_eq_preset(await self._request(c.QUERY_EQ_PRESET))
         band_applied = (
             updated["gain_db"] == gain_db
@@ -217,6 +226,7 @@ class QD35Service:
         self,
         effect: str | None = None,
         rgb: str | None = None,
+        color_mode: str | None = None,
         brightness: int | None = None,
         speed: int | None = None,
         enabled: bool | None = None,
@@ -225,7 +235,7 @@ class QD35Service:
         state = parse_light(await self._request(c.QUERY_LIGHT))
         effect_id = state["selected_effect_id"]
         if effect is not None:
-            effect = effect.lower()
+            effect = effect.strip().lower()
             if effect not in c.LIGHT_EFFECTS:
                 raise ValueError(f"effect must be one of: {', '.join(c.LIGHT_EFFECTS)}")
             effect_id = c.LIGHT_EFFECTS[effect]
@@ -233,8 +243,30 @@ class QD35Service:
         if effect_id not in records:
             raise ProtocolError(f"effect {effect_id} is not reported by this firmware")
         current = records[effect_id]
-        red, green, blue = self._rgb(current["rgb"] if rgb is None else rgb)
+        if rgb is not None and color_mode is not None:
+            raise ValueError("rgb and color_mode cannot be used together")
+        if effect_id in c.LIGHT_RGB_EFFECT_IDS:
+            if color_mode is not None:
+                raise ValueError(f"{current['name']} uses rgb, not color_mode")
+            red, green, blue = tuple(current["raw_color"]) if rgb is None else self._rgb(rgb)
+        else:
+            if rgb is not None:
+                allowed = ", ".join(c.LIGHT_COLOR_MODES[effect_id])
+                raise ValueError(f"{current['name']} uses color_mode ({allowed}), not rgb")
+            red, green, blue = current["raw_color"]
+            if color_mode is not None:
+                color_mode = color_mode.strip().lower()
+                modes = c.LIGHT_COLOR_MODES[effect_id]
+                if color_mode not in modes:
+                    raise ValueError(
+                        f"color_mode for {current['name']} must be one of: {', '.join(modes)}"
+                    )
+                red, green, blue = modes[color_mode], 0, 0
         target_brightness = current["brightness"] if brightness is None else brightness
+        if enabled is True and brightness == 0:
+            raise ValueError("enabled=true conflicts with brightness=0")
+        if enabled is False and brightness not in (None, 0):
+            raise ValueError("enabled=false conflicts with a nonzero brightness")
         if enabled is False:
             target_brightness = 0
         elif enabled is True and brightness is None and target_brightness == 0:
@@ -253,12 +285,14 @@ class QD35Service:
         )
         await self._request(c.SET_LIGHT, payload)
         result = parse_light(await self._request(c.QUERY_LIGHT))
-        selected = next(item for item in result["effects"] if item["id"] == effect_id)
+        selected = next((item for item in result["effects"] if item["id"] == effect_id), None)
+        if selected is None:
+            raise ProtocolError(f"lighting readback omitted requested effect {effect_id}")
         applied = (
             result["group"] == state["group"]
             and result["selected_effect_id"] == effect_id
-            and selected["rgb"] == f"#{red:02X}{green:02X}{blue:02X}"
-            and selected["brightness"] == target_brightness
+            and selected["raw_color"] == [red, green, blue]
+            and all(item["brightness"] == target_brightness for item in result["effects"])
             and selected["wire_speed"] == wire_speed
         )
         return {"applied": applied, "lighting": result}
@@ -266,44 +300,85 @@ class QD35Service:
     @serialized_mutation
     async def media_control(self, action: str) -> dict[str, object]:
         self._write_allowed()
-        action = action.lower()
+        action = action.strip().lower()
         if action not in c.MEDIA_ACTIONS:
             raise ValueError(f"action must be one of: {', '.join(c.MEDIA_ACTIONS)}")
-        if not self.transport.connected:
-            await self.transport.connect(self.config.device)
+        before = parse_playback(await self._request(c.QUERY_PLAYBACK))
         await self.transport.send(c.MEDIA_CONTROL, bytes((c.MEDIA_ACTIONS[action],)))
+        await asyncio.sleep(0.1)
+        try:
+            after = parse_playback(await self._request(c.QUERY_PLAYBACK))
+        except QD35Error as exc:
+            return {
+                "sent": True,
+                "action": action,
+                "applied": None,
+                "playback_before": before,
+                "playback_after": {"unavailable": True, "error": str(exc)},
+                "verification": "command sent; playback readback failed",
+            }
+        applied = None
+        if action == "play":
+            if after["playing"] is False:
+                applied = False
+            elif before["playing"] is False:
+                applied = True
+        elif action == "pause":
+            if after["playing"] is True:
+                applied = False
+            elif before["playing"] is True:
+                applied = True
         return {
             "sent": True,
             "action": action,
+            "applied": applied,
             "acknowledgement": None,
-            "verification": "fire-and-forget AVRCP command; no C2 reply is emitted",
+            "playback_before": before,
+            "playback_after": after,
+            "changed": before["playing"] != after["playing"],
+            "verification": (
+                "C2 is fire-and-forget; C3 independently reports playing state but cannot "
+                "verify track changes"
+            ),
         }
 
     @serialized_mutation
     async def sync_clock(self, clock_format: str = "preserve") -> dict[str, object]:
         self._write_allowed()
+        clock_format = clock_format.strip().lower()
         if clock_format not in {"preserve", "12h", "24h"}:
             raise ValueError("clock_format must be preserve, 12h, or 24h")
-        now = datetime.now().astimezone()
-        if clock_format == "preserve":
-            payload = bytes((now.hour, now.minute, now.second, 0))
-        elif clock_format == "12h":
-            hour = now.hour % 12 or 12
-            payload = bytes((hour, now.minute, now.second, 1, 1 if now.hour >= 12 else 0))
-        else:
-            payload = bytes((now.hour, now.minute, now.second, 2, 1 if now.hour >= 12 else 0))
-        response = await self._request(c.SYNC_CLOCK, payload)
-        return {
-            "sent": True,
-            "time": now.isoformat(),
-            "format": clock_format,
-            "response": response.hex(),
-        }
+        for attempt in range(1, 3):
+            now = datetime.now().astimezone()
+            if clock_format == "preserve":
+                payload = bytes((now.hour, now.minute, now.second, 0))
+            elif clock_format == "12h":
+                hour = now.hour % 12 or 12
+                payload = bytes((hour, now.minute, now.second, 1, 1 if now.hour >= 12 else 0))
+            else:
+                payload = bytes((now.hour, now.minute, now.second, 2, 1 if now.hour >= 12 else 0))
+            response = await self._request(c.SYNC_CLOCK, payload)
+            if response == b"\x01":
+                return {
+                    "sent": True,
+                    "acknowledged": True,
+                    "applied": None,
+                    "time": now.isoformat(),
+                    "format": clock_format,
+                    "response": response.hex(),
+                    "attempts": attempt,
+                    "verification": "speaker returned success; this protocol has no clock readback",
+                }
+            if response != b"\x02":
+                raise ProtocolError(
+                    f"clock sync returned unexpected response {response.hex() or '<empty>'}"
+                )
+        raise ProtocolError("speaker requested clock resynchronization twice")
 
     @serialized_mutation
     async def set_ldac(self, mode: str) -> dict[str, object]:
         self._write_allowed()
-        mode = mode.lower()
+        mode = mode.strip().lower()
         if mode not in c.LDAC_MODES:
             raise ValueError(f"mode must be one of: {', '.join(c.LDAC_MODES)}")
         expected = c.LDAC_MODES[mode]
@@ -338,17 +413,24 @@ class QD35Service:
     @serialized_mutation
     async def rename(self, name: str) -> dict[str, object]:
         self._write_allowed()
-        encoded = name.strip().encode("utf-8")
+        normalized = name.strip()
+        if any(ord(character) < 32 or ord(character) == 127 for character in normalized):
+            raise ValueError("name must not contain control characters")
+        encoded = normalized.encode("utf-8")
         if not encoded or len(encoded) > 24:
             raise ValueError("name must be 1 to 24 UTF-8 bytes")
         await self._request(c.SET_NAME, encoded)
         result = (await self._request(c.QUERY_NAME)).decode("utf-8", "replace")
-        return {"applied": result == name.strip(), "name": result}
+        return {"applied": result == normalized, "name": result}
 
     async def _disruptive(self, opcode: int, operation: str) -> dict[str, object]:
         self._write_allowed(dangerous=True)
         try:
             response = await self._request(opcode)
+            if response != b"\x01":
+                raise ProtocolError(
+                    f"{operation} returned unexpected response {response.hex() or '<empty>'}"
+                )
             return {"sent": True, "operation": operation, "response": response.hex()}
         except OutcomeUnknown:
             return {

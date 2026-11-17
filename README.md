@@ -10,12 +10,12 @@ The protocol is independently implemented from observed behavior and Edifier Con
 
 ## What it controls
 
-- Read complete status: identity, firmware, volume, input, EQ, lights, and LDAC
+- Read complete status: identity, firmware, volume, input, EQ, lights, playback, and LDAC
 - Set volume using the speaker-reported range (firmware 1.3.0 reports 0–16)
 - Select Bluetooth, AUX, or USB input
 - Select Music, Game, Movie, or DIY EQ
 - Adjust the six DIY bands: 62 Hz, 250 Hz, 1 kHz, 4 kHz, 8 kHz, and 16 kHz
-- Select lighting effects and change RGB color, brightness, speed, or on/off state
+- Select lighting effects; use RGB on effects 3–6, named color modes on effects 1, 2, and 7, and change global brightness, supported speed, or on/off state
 - Play/pause and skip the active Bluetooth player
 - Sync the clock and choose 12/24-hour display
 - Select LDAC off, 48/44.1 kHz, or 96 kHz
@@ -71,7 +71,7 @@ To enable reset, shutdown, and audio disconnect, also set `QD35_ENABLE_DANGEROUS
 If exactly one QD35 is visible, it is selected automatically. Otherwise set `QD35_DEVICE` to its BLE address:
 
 ```json
-"QD35_DEVICE": "64:68:70:64:37:0D"
+"QD35_DEVICE": "AA:BB:CC:DD:EE:FF"
 ```
 
 Do not copy that example address unless it is your speaker.
@@ -87,7 +87,7 @@ Do not copy that example address unless it is your speaker.
 | `qd35_set_input` | Select `bluetooth`, `aux`, or `usb` |
 | `qd35_set_eq_preset` | Select `music`, `game`, `movie`, or `diy` |
 | `qd35_set_eq_band` | Set band 0–5 from -3 to +3 dB in 0.5 dB steps |
-| `qd35_set_light` | Change effect, RGB, brightness, speed, or enabled state |
+| `qd35_set_light` | Change effect-specific RGB/color mode, global brightness, supported speed, or enabled state |
 | `qd35_media_control` | `play`, `pause`, `next`, or `previous` |
 | `qd35_sync_clock` | Sync time and select `preserve`, `12h`, or `24h` |
 | `qd35_set_ldac` | Select `off`, `48khz`, or `96khz`; a change restarts Bluetooth |
@@ -96,7 +96,9 @@ Do not copy that example address unless it is your speaker.
 | `qd35_power_off` | Remote shutdown; remote power-on is not supported |
 | `qd35_factory_reset` | Clear pairings and settings |
 
-Every setting tool reads state back when the device allows it. Media control is a one-way AVRCP command and is reported as sent rather than acknowledged. A connection loss after a write is reported as an uncertain outcome. Firmware 1.3.0 restarts Bluetooth after an LDAC change and invalidated the tested host bond, so re-pair Classic audio and call `qd35_get_status` to verify the requested mode. The tool avoids the restart entirely when the requested mode is already active.
+Lighting controls are effect-specific: `ambient` and `magic_tides` accept `color_mode` values `light`/`deep`; `shooting_star`, `breathing`, `tempo_emo`, and `static` accept `rgb`; `extended` accepts `off`/`on`. Brightness is global on firmware 1.3.0. Speed is available only when status reports a numeric speed.
+
+Setting tools read state back when the protocol allows it. Media `C2` is one-way, but the tool also queries `C3` playing state; that can verify play/pause, not track changes. Clock sync reports a device success acknowledgement but `applied` remains unknown because the protocol has no clock readback. A timeout, malformed confirmation, or connection loss after any write is reported as an uncertain outcome. Firmware 1.3.0 restarts Bluetooth after an LDAC change and may invalidate the tested host bond, so re-pair Classic audio and call `qd35_get_status` to verify the requested mode. The tool avoids the restart entirely when the requested mode is already active.
 
 ## Configuration
 
@@ -130,6 +132,14 @@ uv sync --extra dev
 uv run ruff check .
 uv run pytest
 uv build
+```
+
+Physical checks are opt-in and never run in CI:
+
+```bash
+QD35_HARDWARE=1 QD35_DEVICE=<ble-address> uv run pytest tests/hardware
+QD35_HARDWARE=1 QD35_HARDWARE_WRITES=1 QD35_ENABLE_WRITES=1 \
+  QD35_DEVICE=<ble-address> uv run pytest tests/hardware
 ```
 
 Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and do not submit proprietary app assets, personal Bluetooth identifiers, or unverified command mappings as facts.

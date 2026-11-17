@@ -31,6 +31,23 @@ POWER_OFF = 0xCE
 DISCONNECT_AUDIO = 0xCD
 FACTORY_RESET = 0x07
 
+MUTATING_OPCODES = frozenset(
+    {
+        SET_NAME,
+        SET_INPUT,
+        SET_VOLUME,
+        SET_EQ_PRESET,
+        SET_EQ,
+        SET_LIGHT,
+        SET_LDAC,
+        MEDIA_CONTROL,
+        SYNC_CLOCK,
+        POWER_OFF,
+        DISCONNECT_AUDIO,
+        FACTORY_RESET,
+    }
+)
+
 INPUTS = {"bluetooth": 1, "aux": 2, "usb": 3}
 INPUT_NAMES = {value: key for key, value in INPUTS.items()}
 EQ_PRESETS = {"music": 0, "game": 1, "movie": 2, "diy": 3}
@@ -50,3 +67,9 @@ LIGHT_EFFECTS = {
     "extended": 7,
 }
 LIGHT_EFFECT_NAMES = {value: key for key, value in LIGHT_EFFECTS.items()}
+LIGHT_RGB_EFFECT_IDS = frozenset({3, 4, 5, 6})
+LIGHT_COLOR_MODES = {
+    1: {"light": 1, "deep": 2},
+    2: {"light": 1, "deep": 2},
+    7: {"off": 0, "on": 1},
+}

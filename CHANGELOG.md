@@ -10,4 +10,9 @@
   clock sync, audio disconnect, factory reset, and power off.
 - In-process UUID filtering to avoid the BlueZ 5.87 filtered-discovery crash.
 - Bounded input readback polling and one-way AVRCP media-command handling.
+- Adversarial frame/parser fuzzing, bounded notification buffering, serialized lifecycle cleanup,
+  and unknown-outcome handling for every ambiguous write failure.
+- Effect-specific QD35 lighting controls, including named modes and global brightness behavior.
+- Live changed-value/readback/restoration across every EQ band, every lighting effect, and LDAC
+  96 kHz; clock and media results now distinguish acknowledgement from independent readback.
 

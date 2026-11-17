@@ -36,7 +36,7 @@ Captured from a physical speaker identified by `C9` as `EDIFIER QD35`:
 | `66` volume | `10 0A` | maximum 16, current 10 |
 | `61` input | `02 01` | group 2, Bluetooth |
 | `D5` EQ preset | `00` | Music |
-| `43` custom EQ | `03 06 ...` | profile 3, six 6-byte band records |
+| `43` custom EQ | `03 06 ... 00 00 00 00` | profile 3, six 6-byte band records, then four reserved zero bytes |
 | `6A` lighting | `01 04 ...` | group 1, effect 4, seven effect records |
 | `48` LDAC | `00` | disabled |
 | `C6` firmware | `01 03 00` | 1.3.0 |
@@ -55,7 +55,7 @@ tracked separately in `hardware-validation.md`:
 | Input | `61` | `62` | group `02`, Bluetooth `01`, AUX `02`, USB `03` |
 | EQ preset | `D5` | `C4` | Music `00`, Game `01`, Movie `02`, DIY `03` |
 | EQ band | `43` | `44` | index, `00`, frequency BE16, gain code, Q |
-| Lighting | `6A` | `6B` | group, effect, R, G, B, brightness, wire speed |
+| Lighting | `6A` | `6B` | group, effect, three effect-specific color bytes, global brightness, wire speed |
 | LDAC | `48` | `49` | off `00`, 48 kHz `01`, 96 kHz `02` |
 | Clock | — | `77` | time and format, capability-dependent |
 | Media | `C3` | `C2` (one-way) | play `00`, pause `01`, next `04`, previous `05` |
@@ -64,7 +64,16 @@ tracked separately in `hardware-validation.md`:
 | Power off | — | `CE` | empty |
 | Factory reset | — | `07` | empty |
 
-QD35 lighting speed is inverted on the wire: `wire_speed = 11 - UI_speed`. A wire value of `FF` means that effect has no speed control.
+QD35 group-1 color bytes are effect-specific. Ambient and magic-tides use first-byte
+values `01` light and `02` deep, followed by two zero bytes. Shooting-star, breathing,
+tempo-emo, and static use RGB. Extended uses first-byte values `00` off and `01` on,
+followed by two zero bytes. Brightness is global: a `6B` change is reflected in all
+seven `6A` records. Speed is inverted on the wire (`wire_speed = 11 - UI_speed`); `FF`
+means the effect has no speed control.
+
+Playback query `C3` returns one byte. The official app treats `0D` as playing and other
+observed values (for example `03`) as not playing. It can verify play/pause state but
+does not prove that a next/previous command changed tracks.
 
 ## Evidence discipline
 

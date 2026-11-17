@@ -24,16 +24,16 @@ the physical speaker:
 |---|---|
 | Volume `67` | 10 → 11 → 10; both readbacks matched |
 | Input `62` | Bluetooth → AUX → USB → Bluetooth; every delayed readback matched |
-| EQ preset `C4` | Music → Game → Music; both readbacks matched |
-| EQ band `44` | 62 Hz 0.0 → +0.5 → 0.0 dB; DIY activation and both readbacks matched |
-| Lighting `6B` | Breathing → static `#123456` at 90% → breathing at 100%; effect, RGB, brightness, and speed readbacks matched |
+| EQ preset `C4` | Music, Game, Movie, and DIY all selected; final Music restoration matched |
+| EQ band `44` | All six bands changed to -0.5 dB, read back with DIY active, and restored to 0.0 dB |
+| Lighting `6B` | All seven effects exercised with their real RGB/named-mode shape, brightness, and supported speeds; 18 changed/restored readbacks matched |
 | Rename `CA` | `EDIFIER QD35` → `QD35 MCP TEST` → `EDIFIER QD35`; both readbacks matched |
-| Clock `77` | 24-hour synchronization returned success payload `01` |
-| LDAC `49` | off → 48/44.1 kHz → off; both post-restart readbacks matched, and PipeWire selected LDAC while enabled |
+| Clock `77` | Preserve, 12-hour, and 24-hour synchronization returned `01`; no independent clock readback exists |
+| LDAC `49` | 48/44.1 kHz and 96 kHz were each confirmed by post-restart `48` readback, then restored off |
 
 The final status confirmed volume 10, Bluetooth input, Music EQ, the original six EQ
-gains, breathing effect, 100% brightness, the original static color, and the original
-device name. The LDAC test was performed later and restored the device to off.
+gains, breathing effect, every original lighting color/mode and speed, 100% brightness,
+the original device name, and LDAC off. Classic audio was connected afterward.
 
 ## Media control
 
@@ -59,12 +59,17 @@ Input switching exposed a verification timing issue rather than a protocol failu
 Firmware acknowledged immediately but applied AUX after 0.75 seconds and USB and
 Bluetooth after 1.25 seconds. The MCP now polls bounded readback for up to two seconds.
 
-An LDAC change restarted both Bluetooth links and left BlueZ's previous Classic bond
-unable to reconnect (`Permission denied`). Removing the stale local bond and pairing
-again restored control; readback then confirmed the requested mode. Repeating the
-process restored LDAC off. No physical intervention was needed. The MCP skips an LDAC
-write when the requested mode already matches and reports an unknown outcome plus
-recovery guidance after a real change.
+An LDAC change restarted both Bluetooth links. The first 96 kHz transition left BlueZ's
+previous Classic bond unable to restore BLE advertising; removing the stale local bond
+and pairing again recovered it, and `48` readback confirmed 96 kHz. Restoring LDAC off
+reconnected with the new pairing without removal. No physical intervention was needed.
+The MCP skips an LDAC write when the requested mode already matches and reports an
+unknown outcome plus recovery guidance after a real change.
+
+The live lighting sweep corrected an earlier modeling assumption: bytes labelled R/G/B
+are not RGB for every effect. Ambient and magic-tides use light/deep selectors, extended
+uses off/on, and only effects 3–6 use RGB. Brightness is global across all seven records.
+The public schema, simulator, parser output, and verification logic now encode that.
 
 An earlier raw same-value LDAC write also made the advertisement disappear, but the
 speaker later recovered without any user action. That observation is recorded as
