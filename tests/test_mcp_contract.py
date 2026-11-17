@@ -83,6 +83,7 @@ async def test_real_stdio_server_contract() -> None:
                 "enum"
             ] == ["light", "deep", "off", "on"]
             assert by_name["qd35_sync_clock"].annotations.idempotent_hint is False
+            assert "bedtime" in by_name["qd35_create_sunrise_alarm"].input_schema["properties"]
 
             status = await session.call_tool("qd35_get_status")
             assert status.is_error is False

@@ -8,7 +8,10 @@ from qd35_mcp.alarms import (
     AlarmManager,
     AlarmStore,
     SunriseAlarm,
+    SystemdUserTimers,
     alarm_start_schedule,
+    bedtime_schedule,
+    bedtime_systemd_calendar,
     ramp_value,
     systemd_calendar,
     validate_audio_source,
@@ -36,6 +39,7 @@ def sample_alarm(**changes: object) -> SunriseAlarm:
         "alarm_id": "weekday-wake",
         "name": "Weekday wake",
         "wake_time": "07:00",
+        "bedtime": "22:00",
         "timezone": "America/Regina",
         "weekdays": ("mon", "tue", "wed", "thu", "fri"),
         "sunrise_minutes": 30,
@@ -62,6 +66,13 @@ def test_schedule_starts_before_wake_in_named_timezone() -> None:
         ("mon", "tue", "wed", "thu", "fri"),
     )
     assert systemd_calendar(alarm) == ("Mon,Tue,Wed,Thu,Fri *-*-* 06:30:00 America/Regina")
+    assert bedtime_schedule(alarm) == (
+        "22:00",
+        ("sun", "mon", "tue", "wed", "thu"),
+    )
+    assert bedtime_systemd_calendar(alarm) == (
+        "Sun,Mon,Tue,Wed,Thu *-*-* 22:00:00 America/Regina"
+    )
 
 
 def test_schedule_moves_to_previous_day_across_midnight() -> None:
@@ -118,7 +129,11 @@ class FakeTimers:
         self.stopped.append(alarm_id)
 
     def state(self, _alarm_id: str) -> dict[str, object]:
-        return {"timer_enabled": True, "service_active": False}
+        return {
+            "timer_enabled": True,
+            "service_active": False,
+            "preparation_timer_enabled": True,
+        }
 
     def keepalive_state(self) -> dict[str, object]:
         return {
@@ -146,6 +161,7 @@ async def test_manager_persists_and_controls_alarm(tmp_path) -> None:
     created = await manager.create(
         "Weekday Wake",
         "07:00",
+        "22:00",
         "America/Regina",
         ["mon", "tue", "wed", "thu", "fri"],
         30,
@@ -159,6 +175,7 @@ async def test_manager_persists_and_controls_alarm(tmp_path) -> None:
     )
     assert created["alarm_id"] == "weekday-wake"
     assert created["installed"] is True
+    assert created["bedtime_schedule"].startswith("Sun,Mon,Tue,Wed,Thu")
     assert store.path.stat().st_mode & 0o777 == 0o600
     assert timers.installed[0].clock_format == "12h"
 
@@ -175,3 +192,17 @@ async def test_manager_persists_and_controls_alarm(tmp_path) -> None:
     assert timers.stopped == ["weekday-wake"]
     assert timers.removed == ["weekday-wake"]
     assert timers.keepalive_removed == 1
+
+
+def test_systemd_units_include_separate_bedtime_preparation(tmp_path, monkeypatch) -> None:
+    timers = SystemdUserTimers(tmp_path / "units", tmp_path / "alarms.json")
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(timers, "_run", lambda *args, **_kwargs: calls.append(args))
+    timers.install(sample_alarm())
+    prepare_service = tmp_path / "units/qd35-alarm-weekday-wake-prepare.service"
+    prepare_timer = tmp_path / "units/qd35-alarm-weekday-wake-prepare.timer"
+    assert "--prepare" in prepare_service.read_text(encoding="utf-8")
+    assert "OnCalendar=Sun,Mon,Tue,Wed,Thu *-*-* 22:00:00 America/Regina" in (
+        prepare_timer.read_text(encoding="utf-8")
+    )
+    assert ("enable", "--now", "qd35-alarm-weekday-wake-prepare.timer") in calls

@@ -13,6 +13,7 @@ def alarm(**changes: object) -> SunriseAlarm:
         alarm_id="test",
         name="Test",
         wake_time="07:00",
+        bedtime="22:00",
         timezone="America/Regina",
         weekdays=("mon",),
         sunrise_minutes=0,
@@ -82,3 +83,20 @@ async def test_runner_completes_lighting_alarm_without_audio(
     assert service.inputs == ["bluetooth"]
     assert service.lights[-1]["brightness"] == 80
     assert service.disconnected is True
+
+
+async def test_bedtime_preparation_sets_low_light_without_classic_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = FakeService()
+    monkeypatch.setattr(alarm_runner, "create_service", lambda: service)
+    result = await alarm_runner.prepare_overnight(alarm(start_brightness=3))
+    assert result["prepared"] is True
+    assert result["brightness"] == 3
+    assert result["classic_audio_touched"] is False
+    assert result["bluetooth_disconnect_command_sent"] is False
+    assert service.inputs == []
+    assert service.volumes == []
+    assert service.lights == [
+        {"effect": "static", "rgb": "#FF6A20", "brightness": 3}
+    ]

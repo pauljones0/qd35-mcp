@@ -41,6 +41,7 @@ class SunriseAlarm:
     alarm_id: str
     name: str
     wake_time: str
+    bedtime: str | None
     timezone: str
     weekdays: tuple[str, ...]
     sunrise_minutes: int
@@ -62,6 +63,7 @@ class SunriseAlarm:
             alarm_id=str(value["alarm_id"]),
             name=str(value["name"]),
             wake_time=str(value["wake_time"]),
+            bedtime=str(value["bedtime"]) if value.get("bedtime") else None,
             timezone=str(value["timezone"]),
             weekdays=tuple(str(day) for day in value["weekdays"]),
             sunrise_minutes=int(value["sunrise_minutes"]),
@@ -156,6 +158,32 @@ def systemd_calendar(alarm: SunriseAlarm) -> str:
     return f"{days} *-*-* {start_time}:00 {alarm.timezone}"
 
 
+def bedtime_schedule(alarm: SunriseAlarm) -> tuple[str, tuple[str, ...]] | None:
+    if alarm.bedtime is None:
+        return None
+    bedtime_hour, bedtime_minute = (int(part) for part in alarm.bedtime.split(":"))
+    wake_hour, wake_minute = (int(part) for part in alarm.wake_time.split(":"))
+    bedtime_total = bedtime_hour * 60 + bedtime_minute
+    wake_total = wake_hour * 60 + wake_minute
+    day_shift = -1 if bedtime_total > wake_total else 0
+    ordered = tuple(
+        dict.fromkeys(
+            WEEKDAYS[(WEEKDAYS.index(day) + day_shift) % 7]
+            for day in alarm.weekdays
+        )
+    )
+    return alarm.bedtime, ordered
+
+
+def bedtime_systemd_calendar(alarm: SunriseAlarm) -> str | None:
+    schedule = bedtime_schedule(alarm)
+    if schedule is None:
+        return None
+    bedtime, days_value = schedule
+    days = ",".join(SYSTEMD_DAYS[WEEKDAYS.index(day)] for day in days_value)
+    return f"{days} *-*-* {bedtime}:00 {alarm.timezone}"
+
+
 def ramp_value(start: int, end: int, progress: float) -> int:
     bounded = min(1.0, max(0.0, progress))
     return round(start + (end - start) * bounded)
@@ -190,7 +218,11 @@ class SystemdUserTimers:
 
     @staticmethod
     def _unit_name(alarm_id: str, suffix: str) -> str:
-        if not _ID_PATTERN.fullmatch(alarm_id):
+        base_id = alarm_id.removesuffix("-prepare")
+        if not _ID_PATTERN.fullmatch(base_id) or alarm_id not in {
+            base_id,
+            f"{base_id}-prepare",
+        }:
             raise ValueError("invalid alarm identifier")
         return f"qd35-alarm-{alarm_id}.{suffix}"
 
@@ -240,8 +272,47 @@ class SystemdUserTimers:
         )
         (self.unit_dir / service_name).write_text(service, encoding="utf-8")
         (self.unit_dir / timer_name).write_text(timer, encoding="utf-8")
+        bedtime_calendar = bedtime_systemd_calendar(alarm)
+        if bedtime_calendar is not None:
+            prepare_service_name = self._unit_name(
+                f"{alarm.alarm_id}-prepare", "service"
+            )
+            prepare_timer_name = self._unit_name(f"{alarm.alarm_id}-prepare", "timer")
+            prepare_service = (
+                "[Unit]\n"
+                f"Description=Prepare QD35 overnight light: {alarm.name}\n"
+                "After=bluetooth.service\n\n"
+                "[Service]\n"
+                "Type=oneshot\n"
+                f"ExecStart={python} -m qd35_mcp.alarm_runner --state {state} "
+                f"--alarm {alarm_id} --prepare\n"
+                "NoNewPrivileges=true\n"
+            )
+            prepare_timer = (
+                "[Unit]\n"
+                f"Description=Schedule QD35 overnight light: {alarm.name}\n\n"
+                "[Timer]\n"
+                f"OnCalendar={bedtime_calendar}\n"
+                "Persistent=true\n"
+                "AccuracySec=1s\n"
+                f"Unit={prepare_service_name}\n\n"
+                "[Install]\n"
+                "WantedBy=timers.target\n"
+            )
+            (self.unit_dir / prepare_service_name).write_text(
+                prepare_service, encoding="utf-8"
+            )
+            (self.unit_dir / prepare_timer_name).write_text(
+                prepare_timer, encoding="utf-8"
+            )
         self._run("daemon-reload")
         self._run("enable", "--now", timer_name)
+        if bedtime_calendar is not None:
+            self._run(
+                "enable",
+                "--now",
+                self._unit_name(f"{alarm.alarm_id}-prepare", "timer"),
+            )
 
     def install_keepalive(self, classic_device: str) -> None:
         if not re.fullmatch(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", classic_device):
@@ -280,7 +351,16 @@ class SystemdUserTimers:
         timer_name = self._unit_name(alarm_id, "timer")
         self._run("disable", "--now", timer_name, check=False)
         self._run("stop", service_name, check=False)
-        for name in (service_name, timer_name):
+        prepare_service_name = self._unit_name(f"{alarm_id}-prepare", "service")
+        prepare_timer_name = self._unit_name(f"{alarm_id}-prepare", "timer")
+        self._run("disable", "--now", prepare_timer_name, check=False)
+        self._run("stop", prepare_service_name, check=False)
+        for name in (
+            service_name,
+            timer_name,
+            prepare_service_name,
+            prepare_timer_name,
+        ):
             path = self.unit_dir / name
             if path.exists():
                 path.unlink()
@@ -300,6 +380,14 @@ class SystemdUserTimers:
         return {
             "timer_enabled": enabled.stdout.strip() == "enabled",
             "service_active": active.stdout.strip() == "active",
+            "preparation_timer_enabled": (
+                self._run(
+                    "is-enabled",
+                    self._unit_name(f"{alarm_id}-prepare", "timer"),
+                    check=False,
+                ).stdout.strip()
+                == "enabled"
+            ),
         }
 
     def keepalive_state(self) -> dict[str, object]:
@@ -339,6 +427,7 @@ class AlarmManager:
         self,
         name: str,
         wake_time: str,
+        bedtime: str | None,
         timezone: str,
         weekdays: list[str],
         sunrise_minutes: int,
@@ -352,6 +441,8 @@ class AlarmManager:
     ) -> dict[str, object]:
         if not _TIME_PATTERN.fullmatch(wake_time):
             raise ValueError("wake_time must be HH:MM in 24-hour time")
+        if bedtime is not None and not _TIME_PATTERN.fullmatch(bedtime):
+            raise ValueError("bedtime must be HH:MM in 24-hour time")
         try:
             ZoneInfo(timezone)
         except ZoneInfoNotFoundError as exc:
@@ -380,6 +471,7 @@ class AlarmManager:
             alarm_id=alarm_id,
             name=name.strip(),
             wake_time=wake_time,
+            bedtime=bedtime,
             timezone=timezone,
             weekdays=validate_weekdays(weekdays),
             sunrise_minutes=sunrise_minutes,
@@ -411,14 +503,26 @@ class AlarmManager:
                 alarms[alarm_id] = previous
             self.store.save(alarms)
             raise
-        return {**alarm.to_dict(), "schedule": systemd_calendar(alarm), "installed": True}
+        return {
+            **alarm.to_dict(),
+            "schedule": systemd_calendar(alarm),
+            "bedtime_schedule": bedtime_systemd_calendar(alarm),
+            "installed": True,
+        }
 
     async def list(self) -> dict[str, object]:
         alarms = self.store.load()
         output: list[dict[str, object]] = []
         for alarm in alarms.values():
             state = await asyncio.to_thread(self.timers.state, alarm.alarm_id)
-            output.append({**alarm.to_dict(), "schedule": systemd_calendar(alarm), **state})
+            output.append(
+                {
+                    **alarm.to_dict(),
+                    "schedule": systemd_calendar(alarm),
+                    "bedtime_schedule": bedtime_systemd_calendar(alarm),
+                    **state,
+                }
+            )
         keepalive = await asyncio.to_thread(self.timers.keepalive_state)
         return {"alarms": output, "count": len(output), "audio_keepalive": keepalive}
 

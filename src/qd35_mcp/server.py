@@ -258,6 +258,9 @@ def create_server(
         name: Annotated[str, Field(min_length=1, max_length=80)],
         wake_time: Annotated[str, Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")],
         weekdays: list[Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]],
+        bedtime: Annotated[
+            str | None, Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+        ] = None,
         timezone: str = "America/Regina",
         sunrise_minutes: Annotated[int, Field(ge=1, le=180)] = 30,
         start_brightness: Annotated[int, Field(ge=0, le=99)] = 1,
@@ -273,6 +276,7 @@ def create_server(
             alarm_manager.create,
             name,
             wake_time,
+            bedtime,
             timezone,
             weekdays,
             sunrise_minutes,

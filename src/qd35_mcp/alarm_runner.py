@@ -146,10 +146,49 @@ async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[st
             time.tzset()
 
 
+async def prepare_overnight(alarm: SunriseAlarm) -> dict[str, object]:
+    """Apply the low overnight light state without touching Classic audio."""
+    previous_timezone = os.environ.get("TZ")
+    os.environ["TZ"] = alarm.timezone
+    if hasattr(time, "tzset"):
+        time.tzset()
+    os.environ["QD35_DEVICE"] = alarm.ble_device
+    os.environ["QD35_ENABLE_WRITES"] = "1"
+    service = create_service()
+    try:
+        await service.set_timezone(alarm.timezone, sync_now=False)
+        clock = await service.sync_clock(alarm.clock_format, alarm.timezone)
+        light = await service.set_light(
+            effect="static",
+            rgb=alarm.light_rgb,
+            brightness=alarm.start_brightness,
+        )
+        if light.get("applied") is not True:
+            raise RuntimeError(f"overnight light state was not verified: {light}")
+        return {
+            "alarm_id": alarm.alarm_id,
+            "prepared": True,
+            "brightness": alarm.start_brightness,
+            "light_rgb": alarm.light_rgb,
+            "clock_acknowledged": clock.get("acknowledged") is True,
+            "classic_audio_touched": False,
+            "bluetooth_disconnect_command_sent": False,
+        }
+    finally:
+        await service.disconnect()
+        if previous_timezone is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous_timezone
+        if hasattr(time, "tzset"):
+            time.tzset()
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a persisted QD35 sunrise alarm")
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--alarm", required=True)
+    parser.add_argument("--prepare", action="store_true")
     return parser.parse_args()
 
 
@@ -160,7 +199,10 @@ def main() -> None:
         alarm = alarms[arguments.alarm]
     except KeyError as exc:
         raise SystemExit(f"alarm {arguments.alarm!r} does not exist") from exc
-    asyncio.run(run_alarm(alarm))
+    if arguments.prepare:
+        asyncio.run(prepare_overnight(alarm))
+    else:
+        asyncio.run(run_alarm(alarm))
 
 
 if __name__ == "__main__":

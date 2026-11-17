@@ -103,7 +103,7 @@ Do not copy that example address unless it is your speaker.
 | `qd35_sync_clock` | Sync time and select `preserve`, `12h`, or `24h` |
 | `qd35_set_timezone` | Persist an IANA timezone and optionally synchronize immediately |
 | `qd35_list_alarms` | List persistent sunrise alarms and timer/runtime state |
-| `qd35_create_sunrise_alarm` | Install a timezone-aware, reboot-persistent light/audio alarm |
+| `qd35_create_sunrise_alarm` | Install optional bedtime preparation plus timezone-aware, reboot-persistent sunrise/audio timers |
 | `qd35_run_alarm_now` | Start one installed alarm immediately |
 | `qd35_stop_alarm` | Stop current light/audio playback without disconnecting Bluetooth |
 | `qd35_delete_alarm` | Remove an alarm and its user timer/service |

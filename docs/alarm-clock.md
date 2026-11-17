@@ -11,7 +11,9 @@ On the tested QD35/BlueZ combination, a deliberate host-side disconnect changed 
 
 ## Persistent scheduling
 
-`qd35_create_sunrise_alarm` stores a mode-0600 JSON plan beneath the XDG state directory and installs a systemd user service/timer beneath the XDG user-unit directory. The timer uses the alarm's IANA timezone and starts at `wake_time - sunrise_minutes`. `Persistent=true` catches a missed firing after a reboot. The standalone runner works even after the MCP client that created the alarm exits.
+`qd35_create_sunrise_alarm` stores a mode-0600 JSON plan beneath the XDG state directory and installs systemd user services/timers beneath the XDG user-unit directory. The sunrise timer uses the alarm's IANA timezone and starts at `wake_time - sunrise_minutes`. When `bedtime` is supplied, a separate preparation timer runs on the preceding alarm night: for a Monday–Friday 07:00 wake alarm with bedtime 22:00, it fires Sunday–Thursday at 22:00. `Persistent=true` catches a missed firing after a reboot. The standalone runners work even after the MCP client that created the alarm exits.
+
+Bedtime preparation synchronizes the clock and applies the configured static RGB at `start_brightness`. It uses the BLE control channel only: it does not select the audio input, change volume, launch a player, or send a Classic Bluetooth command. The independently enabled keepalive maintains the existing Classic connection overnight.
 
 During a run it:
 
@@ -43,7 +45,8 @@ Station availability and personal-use terms remain the station operator's respon
 
 ```text
 Create “Weekday Wake” for 07:00 America/Regina, Monday through Friday.
-Start a 30-minute warm-orange sunrise at brightness 1, finish at 80,
+Set a dim warm-orange light at 22:00 the preceding night.
+Start a 30-minute sunrise at brightness 1, finish at 80,
 start Groove Salad during the final 10 minutes, and fade speaker volume to 8.
 ```
 

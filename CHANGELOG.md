@@ -37,4 +37,6 @@
   host disconnect; the reconnect loop now ignores that misleading gate and restored A2DP in 34s.
 - Persistent IANA timezone resolution prevents UTC containers from shifting the speaker clock;
   alarms reinforce their named zone and clock results report the zone actually serialized.
+- Optional bedtime preparation uses a separate preceding-night timer to apply the low overnight
+  light state without selecting input, changing volume, starting playback, or touching Classic audio.
 
