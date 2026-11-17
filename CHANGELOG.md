@@ -58,4 +58,7 @@
   logo extinction.
 - Sunrise RGB and patched-display brightness now use a gamma-2.2 perceptual curve while radio
   volume retains its separate linear device-step fade.
+- Fixed alarm radio routing by selecting the exact QD35 native PipeWire device instead of a
+  `PULSE_SINK` hint ignored by `mpv`; added physical-control snooze, redundant-input suppression,
+  bedtime keepalive activation, and a default 30-minute post-wake player/Classic release.
 

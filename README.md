@@ -32,8 +32,8 @@ The protocol is independently implemented from observed behavior and Edifier Con
   is verified only with the whole front display off.
 - Select LDAC off, 48/44.1 kHz, or 96 kHz
 - Rename, disconnect Bluetooth audio, power off, or factory-reset the speaker
-- Install persistent sunrise alarms that ramp light and speaker volume, play local audio or public internet radio, and keep paired Classic audio connected overnight
-- Turn the patched display and RGB fully off overnight, fade both toward wake time, cap bedside audio, and snooze without disconnecting Bluetooth
+- Install persistent sunrise alarms that ramp light and speaker volume, route local audio or public internet radio to the exact QD35 PipeWire sink, and keep paired Classic audio connected overnight
+- Turn the patched display and RGB fully off overnight, fade both toward wake time, cap bedside audio, snooze from the MCP or side controls, and release the host Bluetooth connection after the wake window
 
 The app's 32 built-in BGM tracks are audio files played by the phone, not stored speaker commands, so they are not redistributed. Firmware installation is intentionally excluded from the agent interface; the separately gated local installer accepts only the exact official 1.3.0 image and has a stock-restore mode.
 

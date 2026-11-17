@@ -59,6 +59,8 @@ class SunriseAlarm:
     custom_display: bool = False
     night_display_brightness: int = 0
     snooze_fade_minutes: int = 2
+    physical_snooze_minutes: int = 10
+    post_wake_minutes: int = 30
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> SunriseAlarm:
@@ -84,6 +86,8 @@ class SunriseAlarm:
             custom_display=bool(value.get("custom_display", False)),
             night_display_brightness=int(value.get("night_display_brightness", 0)),
             snooze_fade_minutes=int(value.get("snooze_fade_minutes", 2)),
+            physical_snooze_minutes=int(value.get("physical_snooze_minutes", 10)),
+            post_wake_minutes=int(value.get("post_wake_minutes", 30)),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -427,6 +431,12 @@ class SystemdUserTimers:
         if not _ID_PATTERN.fullmatch(alarm_id) or not 1 <= minutes <= 60:
             raise ValueError("snooze requires a valid alarm and 1-60 minutes")
         self.stop(alarm_id)
+        self.schedule_snooze(alarm_id, minutes)
+
+    def schedule_snooze(self, alarm_id: str, minutes: int) -> None:
+        """Install a snooze timer without stopping the calling alarm process."""
+        if not _ID_PATTERN.fullmatch(alarm_id) or not 1 <= minutes <= 60:
+            raise ValueError("snooze requires a valid alarm and 1-60 minutes")
         timer_name = self._snooze_unit_name(alarm_id, "timer")
         timer = (
             "[Unit]\n"
@@ -514,6 +524,8 @@ class AlarmManager:
         audio_source: str | None,
         audio_fade_minutes: int,
         target_speaker_volume: int,
+        physical_snooze_minutes: int = 10,
+        post_wake_minutes: int = 30,
     ) -> dict[str, object]:
         if not _TIME_PATTERN.fullmatch(wake_time):
             raise ValueError("wake_time must be HH:MM in 24-hour time")
@@ -535,6 +547,10 @@ class AlarmManager:
             raise ValueError("audio_fade_minutes must be between 0 and sunrise_minutes")
         if not 0 <= target_speaker_volume <= 8:
             raise ValueError("target_speaker_volume must be between 0 and 8 for bedside safety")
+        if not 1 <= physical_snooze_minutes <= 60:
+            raise ValueError("physical_snooze_minutes must be between 1 and 60")
+        if not 0 <= post_wake_minutes <= 180:
+            raise ValueError("post_wake_minutes must be between 0 and 180")
         source = validate_audio_source(audio_source, self.config)
         await self.service.set_timezone(timezone, sync_now=False)
         status = await self.service.status()
@@ -565,6 +581,8 @@ class AlarmManager:
             custom_display=self.config.custom_display_firmware,
             night_display_brightness=0,
             snooze_fade_minutes=2,
+            physical_snooze_minutes=physical_snooze_minutes,
+            post_wake_minutes=post_wake_minutes,
         )
         alarms = self.store.load()
         previous = alarms.get(alarm_id)

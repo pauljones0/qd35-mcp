@@ -652,6 +652,8 @@ class QD35Service:
         current = parse_input(await self._request(c.QUERY_INPUT))
         if current["group"] != 2:
             raise ProtocolError(f"expected QD35 input group 2, received {current['group']}")
+        if current["name"] == source:
+            return {"applied": True, "changed": False, "input": current}
         await self._request(c.SET_INPUT, bytes((2, c.INPUTS[source])))
         # Firmware 1.3.0 acknowledges immediately but applies the new source
         # asynchronously (observed at 0.75-1.25 seconds). Poll bounded readback
@@ -666,7 +668,11 @@ class QD35Service:
                     await asyncio.sleep(0.25)
         except QD35Error as exc:
             return self._unknown_after_write("set_input", exc, ["input_write"])
-        return {"applied": result["name"] == source, "input": result}
+        return {
+            "applied": result["name"] == source,
+            "changed": result["name"] == source,
+            "input": result,
+        }
 
     @serialized_mutation
     async def set_eq_preset(self, preset: str) -> dict[str, object]:

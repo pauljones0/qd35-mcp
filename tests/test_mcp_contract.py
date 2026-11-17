@@ -92,7 +92,12 @@ async def test_real_stdio_server_contract() -> None:
                 "enum"
             ] == ["light", "deep", "off", "on"]
             assert by_name["qd35_sync_clock"].annotations.idempotent_hint is False
-            assert "bedtime" in by_name["qd35_create_sunrise_alarm"].input_schema["properties"]
+            alarm_properties = by_name["qd35_create_sunrise_alarm"].input_schema[
+                "properties"
+            ]
+            assert "bedtime" in alarm_properties
+            assert alarm_properties["physical_snooze_minutes"]["default"] == 10
+            assert alarm_properties["post_wake_minutes"]["default"] == 30
             assert by_name["qd35_install_display_firmware"].input_schema["properties"][
                 "confirmation"
             ]["const"] == "INSTALL DISPLAY PATCH"

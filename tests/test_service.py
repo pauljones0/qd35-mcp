@@ -380,9 +380,24 @@ async def test_input_change_waits_for_delayed_firmware_readback(config: Config) 
 
     assert result == {
         "applied": True,
+        "changed": True,
         "input": {"group": 2, "value": 2, "name": "aux"},
     }
     assert transport.input_queries_after_set == 3
+
+
+async def test_selecting_current_input_skips_redundant_write(config: Config) -> None:
+    transport = DelayedInputTransport()
+    service = QD35Service(transport, config)
+
+    result = await service.set_input("bluetooth")
+
+    assert result == {
+        "applied": True,
+        "changed": False,
+        "input": {"group": 2, "value": 1, "name": "bluetooth"},
+    }
+    assert transport.pending_input is None
 
 
 async def test_dangerous_operations_are_separately_gated(config: Config) -> None:

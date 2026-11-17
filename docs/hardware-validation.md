@@ -128,7 +128,29 @@ The Classic QD35 endpoint was paired and trusted, and PipeWire exposed its 48 kH
 
 The overnight keepalive was then tested by deliberately dropping only the host's Classic connection. BlueZ changed the device's ephemeral `Paired` state to `no`; an initial implementation incorrectly treated that as a reason not to reconnect. After removing that assumption, the enabled service reconnected, re-established pairing, and restored the A2DP endpoint in 34 seconds without opcode `CD`, pairing-record removal, or speaker power cycling.
 
-A subsequent requirements audit found that the original sunrise service applied its low starting brightness only when the pre-wake ramp began. Optional bedtime preparation is now a distinct oneshot service/timer scheduled on the night preceding each wake day. Unit-generation and runner tests verify that this phase changes only clock/light state over BLE and does not touch input, volume, playback, or Classic audio. A daily live schedule was installed for a 22:00 bedtime, 07:30 light-ramp start, 07:50 audio-fade start, and 08:00 wake in `America/Regina`; its state and timezone files are mode 0600. The physical speaker accepted 12-hour clock synchronization and static `#FF6A20` at 3% brightness before the subsequent type-3 diagnostic.
+A subsequent requirements audit found that the original sunrise service applied its low starting brightness only when the pre-wake ramp began. Optional bedtime preparation is now a distinct oneshot service/timer scheduled on the night preceding each wake day. It changes clock/light state over BLE without touching input, volume, or playback; for audio alarms it also establishes the host's Classic connection at bedtime and maintains it overnight. The initial daily live schedule used a 22:00 bedtime, 07:30 light-ramp start, 07:50 audio-fade start, and 08:00 wake in `America/Regina`; the wake target was subsequently moved to 09:00 with an 08:30 ramp and 08:50 audio start. Its state and timezone files are mode 0600. The physical speaker accepted 12-hour clock synchronization and static `#FF6A20` at 3% brightness before the subsequent type-3 diagnostic.
+
+The first live 09:00 alarm exposed two host-integration failures. `mpv` honored its
+native PipeWire default rather than `PULSE_SINK`, so the PopTron stream was active on
+the HDMI sink instead of the QD35. An explicit zero-volume route probe attached the
+corrected command to `bluez_output.64_68_76_64_37_0D.1` while the stale process
+remained attached to HDMI, independently confirming the cause. The 08:30 startup also
+coincided with a Classic reconnect 43 seconds later and an audible device prompt. The
+runner now skips a redundant Bluetooth-input write, mutes before any necessary source
+selection, establishes Classic at bedtime, and disables its keepalive plus disconnects
+the host 30 minutes after wake.
+
+A live initialized BLE listener then captured physical side-control notifications:
+the volume dial emitted `66 10 04` and `66 10 00`, while the lighting dial emitted
+three `6B` settings at 20%, 10%, and 0%. Pressing the lighting control at zero emitted
+another `6B` setting even though the value did not change, confirming button detection
+does not depend on a visible brightness change. The alarm's idle-event watcher treats
+those opcodes as a ten-minute snooze while excluding notifications generated
+synchronously by its own writes. The initial uninitialized listener saw only media
+status; running the normal D8/state initialization before listening was required to
+reproduce the app's event behavior. Input/EQ/playback button notifications remain to
+be exercised live, although their app-confirmed state opcodes are included in the
+watcher.
 
 Clock validation also exposed a host-context error: the coding container used UTC while the configured speaker zone is `America/Regina`. Timezone resolution is now persistent and IANA-based rather than inherited blindly from the process. A fresh process synchronized the physical speaker with 12-hour format; firmware returned success `01`.
 

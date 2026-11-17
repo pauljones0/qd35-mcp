@@ -195,6 +195,8 @@ async def test_manager_persists_and_controls_alarm(tmp_path) -> None:
     assert created["bedtime_schedule"].startswith("Sun,Mon,Tue,Wed,Thu")
     assert store.path.stat().st_mode & 0o777 == 0o600
     assert timers.installed[0].clock_format == "12h"
+    assert timers.installed[0].physical_snooze_minutes == 10
+    assert timers.installed[0].post_wake_minutes == 30
 
     listed = await manager.list()
     assert listed["count"] == 1
@@ -241,4 +243,18 @@ def test_systemd_snooze_timer_targets_short_fade_service(tmp_path, monkeypatch) 
     text = timer.read_text(encoding="utf-8")
     assert "OnActiveSec=10min" in text
     assert "Unit=qd35-alarm-weekday-wake-snooze.service" in text
+    assert ("start", "qd35-alarm-weekday-wake-snooze.timer") in calls
+
+
+def test_physical_snooze_schedules_without_stopping_its_own_service(
+    tmp_path, monkeypatch
+) -> None:
+    timers = SystemdUserTimers(tmp_path / "units", tmp_path / "alarms.json")
+    (tmp_path / "units").mkdir()
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(timers, "_run", lambda *args, **_kwargs: calls.append(args))
+
+    timers.schedule_snooze("weekday-wake", 10)
+
+    assert not any(call[:1] == ("stop",) for call in calls)
     assert ("start", "qd35-alarm-weekday-wake-snooze.timer") in calls

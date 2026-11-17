@@ -8,8 +8,16 @@ import os
 import time
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
-from .alarms import AlarmStore, SunriseAlarm, perceptual_light_value, ramp_value
+from . import constants as c
+from .alarms import (
+    AlarmStore,
+    SunriseAlarm,
+    SystemdUserTimers,
+    perceptual_light_value,
+    ramp_value,
+)
 from .server import create_service
 
 _ALARM_ENVIRONMENT_KEYS = (
@@ -18,6 +26,29 @@ _ALARM_ENVIRONMENT_KEYS = (
     "QD35_CUSTOM_DISPLAY_FIRMWARE",
     "QD35_SCAN_TIMEOUT",
 )
+_KEEPALIVE_UNIT = "qd35-alarm-audio-keepalive.service"
+_CONTROL_EVENT_OPCODES = frozenset(
+    {
+        c.QUERY_INPUT,
+        c.SET_INPUT,
+        c.QUERY_VOLUME,
+        c.SET_VOLUME,
+        c.QUERY_EQ_PRESET,
+        c.SET_EQ_PRESET,
+        c.QUERY_LIGHT,
+        c.SET_LIGHT,
+        c.RESET_LIGHT,
+        c.QUERY_PLAYBACK,
+    }
+)
+
+
+def _alarm_unit_dir() -> Path:
+    configured = (os.getenv("QD35_ALARM_UNIT_DIR") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    base = Path(os.getenv("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return base / "systemd" / "user"
 
 
 def _restore_environment(previous: dict[str, str | None]) -> None:
@@ -44,6 +75,9 @@ async def _run_command(*arguments: str, timeout: float = 20) -> tuple[int, str]:
 
 
 async def _connect_classic(address: str) -> None:
+    code, info = await _run_command("bluetoothctl", "info", address)
+    if code == 0 and "Connected: yes" in info:
+        return
     failures: list[str] = []
     for _attempt in range(3):
         code, output = await _run_command("bluetoothctl", "connect", address)
@@ -55,6 +89,20 @@ async def _connect_classic(address: str) -> None:
         "Classic Bluetooth audio could not connect; pair and trust the QD35 first. "
         + " | ".join(failures)
     )
+
+
+async def _wait_for_classic_connection(
+    address: str, timeout_seconds: float = 90
+) -> bool:
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while True:
+        code, info = await _run_command("bluetoothctl", "info", address)
+        if code == 0 and "Connected: yes" in info:
+            return True
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return False
+        await asyncio.sleep(min(2, remaining))
 
 
 async def _find_audio_sink(address: str) -> str:
@@ -75,17 +123,125 @@ async def _start_audio(alarm: SunriseAlarm) -> asyncio.subprocess.Process:
         raise ValueError("alarm has no audio source")
     await _connect_classic(alarm.classic_device)
     sink = await _find_audio_sink(alarm.classic_device)
-    environment = {**os.environ, "PULSE_SINK": sink}
-    return await asyncio.create_subprocess_exec(
+    process = await asyncio.create_subprocess_exec(
         "mpv",
+        "--no-config",
         "--no-video",
-        "--really-quiet",
+        "--msg-level=all=warn",
+        f"--audio-device=pipewire/{sink}",
         "--volume=50",
         "--loop-playlist=inf",
         "--",
         alarm.audio_source,
-        env=environment,
     )
+    await asyncio.sleep(0.5)
+    if process.returncode is not None:
+        raise RuntimeError(f"mpv exited before alarm playback (exit {process.returncode})")
+    return process
+
+
+async def _stop_player(player: asyncio.subprocess.Process | None) -> int | None:
+    if player is None:
+        return None
+    if player.returncode is None:
+        player.terminate()
+        try:
+            await asyncio.wait_for(player.wait(), 5)
+        except TimeoutError:
+            player.kill()
+            await player.wait()
+    return player.returncode
+
+
+async def _set_keepalive_enabled(enabled: bool) -> dict[str, object]:
+    action = ("enable", "--now") if enabled else ("disable", "--now")
+    code, output = await _run_command("systemctl", "--user", *action, _KEEPALIVE_UNIT)
+    return {
+        "requested": enabled,
+        "applied": code == 0,
+        "detail": output,
+    }
+
+
+async def _release_classic_audio(address: str) -> dict[str, object]:
+    keepalive = await _set_keepalive_enabled(False)
+    if keepalive["applied"] is not True:
+        return {
+            "keepalive": keepalive,
+            "disconnect_exit": None,
+            "disconnect_detail": "not attempted because keepalive could not be disabled",
+            "disconnected": False,
+        }
+    code, output = await _run_command("bluetoothctl", "disconnect", address)
+    lowered = output.lower()
+    disconnected = code == 0 and (
+        "successful" in lowered or "not connected" in lowered
+    )
+    return {
+        "keepalive": keepalive,
+        "disconnect_exit": code,
+        "disconnect_detail": output,
+        "disconnected": disconnected,
+    }
+
+
+async def _latest_event_sequence(service: Any) -> int:
+    result = await service.events(limit=1)
+    return int(result.get("latest_sequence", 0))
+
+
+async def _wait_for_manual_control(
+    service: Any,
+    since_sequence: int,
+    timeout: float,
+    *,
+    ignore_playback_until: float = 0,
+) -> tuple[int, dict[str, object] | None]:
+    """Wait for a state event emitted between our own command transactions."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    cursor = since_sequence
+    while True:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return cursor, None
+        await asyncio.sleep(min(0.25, remaining))
+        result = await service.events(since_sequence=cursor, limit=100)
+        cursor = int(result.get("latest_sequence", cursor))
+        for raw_event in result.get("events", []):
+            event = dict(raw_event)
+            opcode = event.get("opcode")
+            if opcode not in _CONTROL_EVENT_OPCODES:
+                continue
+            if (
+                opcode == c.QUERY_PLAYBACK
+                and asyncio.get_running_loop().time() < ignore_playback_until
+            ):
+                continue
+            return cursor, event
+
+
+async def _apply_night_state(service: Any, alarm: SunriseAlarm) -> dict[str, object]:
+    light = await service.set_light(
+        effect="static",
+        rgb=alarm.light_rgb,
+        brightness=0,
+    )
+    if light.get("applied") is not True:
+        raise RuntimeError(f"night light state was not verified: {light}")
+    display: dict[str, object] | None = None
+    if alarm.custom_display:
+        display = await service.set_display(
+            power=False,
+            clock=False,
+            logo=False,
+            symbols=False,
+            brightness=alarm.night_display_brightness,
+            follow_lighting_dial=False,
+            raw_mode=False,
+        )
+        if display.get("acknowledged") is not True:
+            raise RuntimeError(f"night display state was not acknowledged: {display}")
+    return {"light": light, "display": display}
 
 
 async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[str, object]:
@@ -110,10 +266,12 @@ async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[st
     duration = alarm.sunrise_minutes * 60
     audio_start = max(0, duration - alarm.audio_fade_minutes * 60)
     started = time.monotonic()
+    playback_events_ignored_until = 0.0
     try:
         await service.set_timezone(alarm.timezone, sync_now=False)
         await service.sync_clock(alarm.clock_format, alarm.timezone)
-        await service.set_input("bluetooth")
+        event_cursor = 0
+        manual_event: dict[str, object] | None = None
         while True:
             elapsed = min(duration, time.monotonic() - started)
             light_progress = 1.0 if duration == 0 else elapsed / duration
@@ -147,9 +305,22 @@ async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[st
 
             if alarm.audio_source is not None and elapsed >= audio_start:
                 if not audio_started:
-                    await service.set_volume(0)
+                    muted = await service.set_volume(0)
+                    if muted.get("applied") is not True:
+                        raise RuntimeError(f"pre-audio mute was not verified: {muted}")
+                    # Select the audio source only when audio is due, after muting.
+                    # set_input is a no-op when Bluetooth is already selected, which
+                    # avoids the redundant source write correlated with the morning
+                    # reconnect prompt.
+                    selected = await service.set_input("bluetooth")
+                    if selected.get("applied") is not True:
+                        raise RuntimeError(f"Bluetooth input was not verified: {selected}")
                     player = await _start_audio(alarm)
                     audio_started = True
+                    last_volume = 0
+                    playback_events_ignored_until = (
+                        asyncio.get_running_loop().time() + 3
+                    )
                 fade_seconds = alarm.audio_fade_minutes * 60
                 audio_progress = (
                     1.0 if fade_seconds == 0 else (elapsed - audio_start) / fade_seconds
@@ -163,7 +334,32 @@ async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[st
 
             if elapsed >= duration:
                 break
-            await asyncio.sleep(min(tick_seconds, max(0.1, duration - elapsed)))
+            # Everything recorded through this point belongs to our own command
+            # transactions. A control-state event arriving during the idle interval
+            # is therefore a physical side-control interaction and means snooze.
+            event_cursor = await _latest_event_sequence(service)
+            event_cursor, manual_event = await _wait_for_manual_control(
+                service,
+                event_cursor,
+                min(tick_seconds, max(0.1, duration - elapsed)),
+                ignore_playback_until=playback_events_ignored_until,
+            )
+            if manual_event is not None:
+                break
+
+        if manual_event is not None:
+            player_exit = await _stop_player(player)
+            night = await _apply_night_state(service, alarm)
+            return {
+                "alarm_id": alarm.alarm_id,
+                "completed": False,
+                "snoozed_by_physical_control": True,
+                "snooze_minutes": alarm.physical_snooze_minutes,
+                "control_event": manual_event,
+                "night_state": night,
+                "player_exit_code": player_exit,
+                "bluetooth_disconnected": False,
+            }
 
         result: dict[str, object] = {
             "alarm_id": alarm.alarm_id,
@@ -176,10 +372,21 @@ async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[st
         }
         if player is not None:
             result["player_pid"] = player.pid
-            await player.wait()
-            result["player_exit_code"] = player.returncode
+            if alarm.post_wake_minutes:
+                try:
+                    await asyncio.wait_for(
+                        player.wait(), alarm.post_wake_minutes * 60
+                    )
+                except TimeoutError:
+                    pass
+            result["player_exit_code"] = await _stop_player(player)
+            release = await _release_classic_audio(alarm.classic_device)
+            result["post_wake_minutes"] = alarm.post_wake_minutes
+            result["classic_release"] = release
+            result["bluetooth_disconnected"] = release["disconnected"]
         return result
     finally:
+        await _stop_player(player)
         await service.disconnect()
         if previous_timezone is None:
             os.environ.pop("TZ", None)
@@ -191,7 +398,7 @@ async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[st
 
 
 async def prepare_overnight(alarm: SunriseAlarm) -> dict[str, object]:
-    """Apply the low overnight light state without touching Classic audio."""
+    """Apply the dark state and establish Classic audio well before wake time."""
     previous_timezone = os.environ.get("TZ")
     previous_environment = {
         name: os.environ.get(name) for name in _ALARM_ENVIRONMENT_KEYS
@@ -205,27 +412,22 @@ async def prepare_overnight(alarm: SunriseAlarm) -> dict[str, object]:
     if alarm.custom_display:
         os.environ["QD35_CUSTOM_DISPLAY_FIRMWARE"] = "1"
     service = create_service()
+    keepalive: dict[str, object] | None = None
     try:
+        # Firmware 1.3.0 exposes the A400 control advertisement reliably only
+        # after the Classic endpoint is connected. Establish that relationship
+        # at bedtime, when an unavoidable device prompt is not a wake-up event.
+        if alarm.audio_source is not None:
+            keepalive = await _set_keepalive_enabled(True)
+            if keepalive.get("applied") is not True:
+                raise RuntimeError(f"Classic audio keepalive could not start: {keepalive}")
+            if not await _wait_for_classic_connection(alarm.classic_device):
+                raise RuntimeError("Classic audio did not connect during bedtime preparation")
         await service.set_timezone(alarm.timezone, sync_now=False)
         clock = await service.sync_clock(alarm.clock_format, alarm.timezone)
-        light = await service.set_light(
-            effect="static",
-            rgb=alarm.light_rgb,
-            brightness=0,
-        )
-        if light.get("applied") is not True:
-            raise RuntimeError(f"overnight light state was not verified: {light}")
-        display: dict[str, object] | None = None
-        if alarm.custom_display:
-            display = await service.set_display(
-                power=False,
-                clock=False,
-                logo=False,
-                symbols=False,
-                brightness=alarm.night_display_brightness,
-                follow_lighting_dial=False,
-                raw_mode=False,
-            )
+        night = await _apply_night_state(service, alarm)
+        display_value = night["display"]
+        display = display_value if isinstance(display_value, dict) else None
         return {
             "alarm_id": alarm.alarm_id,
             "prepared": True,
@@ -239,7 +441,8 @@ async def prepare_overnight(alarm: SunriseAlarm) -> dict[str, object]:
                 display is None or display.get("acknowledged") is True
             ),
             "clock_acknowledged": clock.get("acknowledged") is True,
-            "classic_audio_touched": False,
+            "classic_audio_touched": keepalive is not None,
+            "classic_keepalive": keepalive,
             "bluetooth_disconnect_command_sent": False,
         }
     finally:
@@ -269,11 +472,12 @@ def main() -> None:
         alarm = alarms[arguments.alarm]
     except KeyError as exc:
         raise SystemExit(f"alarm {arguments.alarm!r} does not exist") from exc
+    result: dict[str, object]
     if arguments.prepare:
-        asyncio.run(prepare_overnight(alarm))
+        result = asyncio.run(prepare_overnight(alarm))
     elif arguments.snoozed:
         fade = alarm.snooze_fade_minutes
-        asyncio.run(
+        result = asyncio.run(
             run_alarm(
                 replace(
                     alarm,
@@ -284,7 +488,10 @@ def main() -> None:
             )
         )
     else:
-        asyncio.run(run_alarm(alarm))
+        result = asyncio.run(run_alarm(alarm))
+    if result.get("snoozed_by_physical_control") is True:
+        timers = SystemdUserTimers(_alarm_unit_dir(), arguments.state)
+        timers.schedule_snooze(alarm.alarm_id, alarm.physical_snooze_minutes)
 
 
 if __name__ == "__main__":

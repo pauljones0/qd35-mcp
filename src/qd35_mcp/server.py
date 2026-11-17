@@ -397,6 +397,8 @@ def create_server(
         audio_source: str | None = None,
         audio_fade_minutes: Annotated[int, Field(ge=0, le=180)] = 10,
         target_speaker_volume: Annotated[int, Field(ge=0, le=8)] = 4,
+        physical_snooze_minutes: Annotated[int, Field(ge=1, le=60)] = 10,
+        post_wake_minutes: Annotated[int, Field(ge=0, le=180)] = 30,
     ) -> dict[str, object]:
         """Persist a sunrise alarm and install a reboot-persistent user timer."""
         return await call(
@@ -414,6 +416,8 @@ def create_server(
             audio_source,
             audio_fade_minutes,
             target_speaker_volume,
+            physical_snooze_minutes,
+            post_wake_minutes,
         )
 
     @server.tool(
