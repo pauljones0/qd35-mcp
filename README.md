@@ -1,225 +1,92 @@
-<p align="center">
-  <img src="assets/icon.svg" width="96" height="96" alt="QD35 MCP icon">
-</p>
-
 # QD35 MCP
 
-A local [Model Context Protocol](https://modelcontextprotocol.io/) server that lets an agent control an **Edifier QD35** over Bluetooth Low Energy. It talks directly to the speaker; the discontinued Edifier Connect mobile app is not required.
+![QD35 MCP. Local control for the Edifier QD35 with audio, RGB lighting, and sunrise alarms.](assets/hero.svg)
 
-The protocol is independently implemented from observed behavior and Edifier Connect command definitions. It has been exercised against a physical QD35 running firmware 1.3.0. This project is not affiliated with Edifier.
+[![CI](https://github.com/pauljones0/qd35-mcp/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/pauljones0/qd35-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-91b597)](LICENSE)
 
-## What it controls
+Control an **Edifier QD35** from an MCP client on Linux. The server talks directly to the speaker
+over Bluetooth Low Energy. No phone app or cloud account is required for local speaker control.
 
-- Read complete status: identity, firmware, decoded capabilities, volume, input, EQ, lights, playback, audio-decoding status, custom-light status, and LDAC
-- Set volume using the speaker-reported range (firmware 1.3.0 reports 0–16)
-- Select Bluetooth, AUX, or USB input
-- Select Music, Game, Movie, or DIY EQ
-- Adjust or reset the six DIY bands: 62 Hz, 250 Hz, 1 kHz, 4 kHz, 8 kHz, and 16 kHz
-- Select or reset lighting effects; use RGB on effects 3–6, named color modes on effects 1, 2, and 7, and change global brightness, supported speed, or on/off state
-- Install all four official Extended animations (Gradient, Water-drop, Spiral, and Multicolored), with palette support where the app provides it
-- Upload bounded address-mapping, RGB, timing, and reserved-byte diagnostic animations for video-assisted reverse engineering
-- Probe Spiral's firmware-generated type-3 motion with bounded color and timing diagnostics
-- Play built-in Pac-Man, comet, rainbow-wave, firefly, and ember animations generated locally
-- Read the calibrated front-view visible-emission position for all 37 wire addresses
-- Compile and upload local RGB animations with 1–102 frames, exactly 37 colors per frame, bounded timing, and no file/URL input
-- Retain and expose unsolicited playback/title/artist events instead of discarding them
-- Play/pause and skip the active Bluetooth player
-- Sync the clock and choose 12/24-hour display
-- With the optional open MCU patch: turn the clock digits, status-symbol grid, or whole front
-  display on/off; select CMS1640 brightness 0–7; follow the right-side lighting control; or
-  address all eight raw display-grid bytes. The logo grid can be masked electrically, but the
-  physical EDIFIER wordmark still catches light from illuminated clock digits; full extinction
-  is verified only with the whole front display off.
-- Select LDAC off, 48/44.1 kHz, or 96 kHz
-- Rename, disconnect Bluetooth audio, power off, or factory-reset the speaker
-- Install persistent sunrise alarms that ramp light and speaker volume, route local audio or public internet radio to the exact QD35 PipeWire sink, and keep paired Classic audio connected overnight
-- Turn the patched display and RGB fully off overnight, fade both toward wake time, cap bedside audio, snooze from the MCP or side controls, and release the host Bluetooth connection after the wake window
+| Use it for | Examples |
+| --- | --- |
+| Everyday audio | Set volume, switch inputs, adjust EQ, or control Bluetooth playback. |
+| Lighting | Set warm orange at 20%, run a beat-reactive effect, or build an Extended animation. |
+| Clock and sunrise | Sync the clock in your timezone, fade the lights up, and start bedside radio. |
+| Front display | With the optional firmware patch, dim or blank the clock and front display. |
 
-The app's 32 built-in BGM tracks are audio files played by the phone, not stored speaker commands, so they are not redistributed. Firmware installation is intentionally excluded from the agent interface; the separately gated local installer accepts only the exact official 1.3.0 image and has a stock-restore mode.
+## Quick start
 
-## Requirements
+1. On a Linux machine with Bluetooth and BlueZ, install using `uv` and Python 3.11 or newer.
 
-- Linux with BlueZ and a working Bluetooth adapter
-- Python 3.11+
-- A powered-on QD35 nearby
+   ```bash
+   git clone https://github.com/pauljones0/qd35-mcp.git
+   cd qd35-mcp
+   uv tool install .
+   uv tool dir --bin
+   ```
 
-The BLE control channel does not require pairing. Classic Bluetooth pairing is still needed for audio playback.
+2. Add the server to your MCP client. For clients using an `mcpServers` configuration, use
+   the absolute path from `uv tool dir --bin`.
 
-## Install and run
+   ```json
+   {
+     "mcpServers": {
+       "qd35": {
+         "command": "/home/you/.local/bin/qd35-mcp",
+         "env": {
+           "QD35_ENABLE_WRITES": "1"
+         }
+       }
+     }
+   }
+   ```
 
-Using `uv`:
+3. Power on your QD35 and ask the agent to **“Show my speaker status.”** If multiple candidates
+   appear, call `qd35_discover` and set `QD35_DEVICE` to your speaker’s BLE address. For read-only
+   use, omit `QD35_ENABLE_WRITES`.
 
-```bash
-uv tool install .
-QD35_ENABLE_WRITES=1 qd35-mcp
-```
+BLE control can work without pairing. For alarm music and radio, pair the separate Classic
+audio endpoint and set up systemd user timers, PipeWire, and `mpv`. See the
+[alarm guide](docs/alarm-clock.md) for prerequisites and examples.
 
-For development:
+## Try it
 
-```bash
-uv sync --extra dev
-QD35_TRANSPORT=fake uv run qd35-mcp
-```
+- “Set the lighting to warm orange at 20% and leave the volume alone.”
+- “Set the speaker clock to 12-hour time in my timezone.”
+- “Set a weekday wake-up for 8:00 with a 30-minute sunrise and quiet radio.”
 
-The fake transport is deterministic and useful for checking an MCP host without a speaker. It proves the server contract, not Bluetooth compatibility.
+MCP clients with resource support can read `qd35://guide` without connecting to the speaker.
 
-## MCP host configuration
+## Guides and evidence
 
-Use an absolute executable path when a desktop host has a restricted `PATH`:
+- [MCP tools and configuration](docs/mcp.md) — inputs, gates, and what readback verifies
+- [Sunrise alarms](docs/alarm-clock.md) — bedtime, radio, snooze, and release after wake
+- [Optional display firmware](docs/display-firmware.md) — exact-image install and stock restore
+- [Architecture](docs/architecture.md) — the BLE control path and Classic audio path
+- [App coverage](docs/app-features.md) · [Live hardware validation](docs/hardware-validation.md) · [Lighting address map](docs/address-map.md)
 
-```json
-{
-  "mcpServers": {
-    "qd35": {
-      "command": "/home/you/.local/bin/qd35-mcp",
-      "env": {
-        "QD35_ENABLE_WRITES": "1",
-        "QD35_DEVICE": "AA:BB:CC:DD:EE:FF"
-      }
-    }
-  }
-}
-```
+## Hardware notes
 
-To enable reset, shutdown, and audio disconnect, also set `QD35_ENABLE_DANGEROUS=1`. MCP host approval dialogs are still useful; the environment gate is defense in depth.
+The physical speaker tested runs firmware **1.3.0**. Factory reset, shutdown, and audio
+disconnect require the separate dangerous-write gate. The optional display patch adds dimming
+and blanking. Lit clock digits can still illuminate the wordmark, so blank the whole display for
+a fully dark front. App-local BGM tracks are outside the speaker protocol and are not bundled.
 
-If exactly one QD35 is visible, it is selected automatically. Otherwise set `QD35_DEVICE` to its BLE address:
-
-```json
-"QD35_DEVICE": "AA:BB:CC:DD:EE:FF"
-```
-
-Do not copy that example address unless it is your speaker.
-
-## Tools
-
-| Tool | Purpose |
-|---|---|
-| `qd35_discover` | Bounded BLE scan, without pairing or connecting |
-| `qd35_get_status` | Read all useful current state |
-| `qd35_get_capabilities` | Show supported, excluded, and gated operations |
-| `qd35_get_display_status` | Show locally retained patched-display state and readback limits |
-| `qd35_get_display_firmware_info` | Show bundled patch/source hashes, gates, and fixed install/restore contract |
-| `qd35_get_events` | Read retained notifications, including playback/title/artist events and raw unknown events |
-| `qd35_list_custom_lights` | List official QD35 Extended animations and palettes |
-| `qd35_apply_diagnostic_light` | Upload one low-brightness protocol-calibration animation |
-| `qd35_apply_authored_light` | Compile and upload bounded local RGB frames; byte four is forced to zero |
-| `qd35_apply_animation_preset` | Generate and upload `pac_man`, `comet`, `rainbow_wave`, `fireflies`, or `embers` |
-| `qd35_set_volume` | Set and read back volume |
-| `qd35_set_input` | Select `bluetooth`, `aux`, or `usb` |
-| `qd35_set_eq_preset` | Select `music`, `game`, `movie`, or `diy` |
-| `qd35_set_eq_band` | Set band 0–5 from -3 to +3 dB in 0.5 dB steps |
-| `qd35_reset_eq` | Restore all six DIY bands to their firmware defaults |
-| `qd35_set_light` | Change effect-specific RGB/color mode, global brightness, supported speed, or enabled state |
-| `qd35_set_display` | Patched firmware: control display power, digit/logo/symbol grids, brightness, dial-follow, and raw mode; results disclose clock-to-logo optical coupling |
-| `qd35_write_display_grid_byte` | Patched firmware expert mode: write one of eight raw CMS1640 grid bytes |
-| `qd35_reset_display` | Patched firmware: restore volatile stock-equivalent display defaults |
-| `qd35_install_display_firmware` | Fetch the exact pinned Edifier source, apply the bundled patch, and flash the pinned QD35 |
-| `qd35_restore_stock_firmware` | Fetch and flash the exact pinned official image, removing the display patch |
-| `qd35_reset_light` | Reset one ordinary effect's parameters |
-| `qd35_set_light_timer` | Set the lighting timer when the live D8 capability block advertises it |
-| `qd35_apply_custom_light` | Download, verify, transfer, read back, and optionally activate an official Extended animation |
-| `qd35_media_control` | `play`, `pause`, `next`, or `previous` |
-| `qd35_sync_clock` | Sync time and select `preserve`, `12h`, or `24h` |
-| `qd35_set_timezone` | Persist an IANA timezone and optionally synchronize immediately |
-| `qd35_list_alarms` | List persistent sunrise alarms and timer/runtime state |
-| `qd35_create_sunrise_alarm` | Install optional bedtime preparation plus timezone-aware, reboot-persistent sunrise/audio timers |
-| `qd35_run_alarm_now` | Start one installed alarm immediately |
-| `qd35_stop_alarm` | Stop current light/audio playback without disconnecting Bluetooth |
-| `qd35_snooze_alarm` | Stop audio, restore the fully dark night state, and restart with a short fade after 1–60 minutes |
-| `qd35_delete_alarm` | Remove an alarm and its user timer/service |
-| `qd35_set_alarm_audio_keepalive` | Enable or disable overnight Classic-audio reconnection |
-| `qd35_set_ldac` | Select `off`, `48khz`, or `96khz`; a change restarts Bluetooth |
-| `qd35_rename_device` | Rename using the live D8-advertised UTF-8 limit (35 bytes on tested firmware) |
-| `qd35_disconnect_audio` | Drop the Classic Bluetooth audio link |
-| `qd35_power_off` | Remote shutdown; remote power-on is not supported |
-| `qd35_factory_reset` | Clear pairings and settings |
-
-Lighting controls are effect-specific: `ambient` and `magic_tides` accept `color_mode` values `light`/`deep`; `shooting_star`, `breathing`, `tempo_emo`, and `static` accept `rgb`; `extended` accepts `off`/`on`. Brightness is global on firmware 1.3.0. Speed is available only when status reports a numeric speed.
-
-Custom-light downloads are restricted to fixed Edifier HTTPS URLs, capped in size, and checked against pinned SHA-256 hashes and the recovered 150-byte record format before Bluetooth transfer. Firmware, target identity, and one-write ATT capacity are verified before `79`; transfer limits come from the speaker, every chunk is acknowledged with bounded retries, failure triggers a best-effort abort, and completion is checked with `78` identity readback. Firmware does not return the installed binary, so the result states that verification limit explicitly. Diagnostic patterns are generated locally from fixed, validated geometry and activate at no more than 25% brightness. Authored animations accept only inline `#RRGGBB` frames: 1–102 frames, exactly 37 colors per frame, 5–60,000 ms per frame, and a ten-minute loop bound. They cannot select files or network locations, and byte four is always zero.
-
-The diagnostic catalog includes the measured front-view emission centroid for every wire address. These coordinates locate the visible light-guide output, not an unseen LED package. See [docs/address-map.md](docs/address-map.md) for the schematic, measurement method, and 3D limits.
-
-The 37-address RGB chain can be disabled while Bluetooth remains active. The clock,
-status icons, and EDIFIER wordmark use a separate display driver. Stock firmware has
-no stock controls, but the project's optional, live-validated 400-byte MCU
-patch adds a private fail-closed command path while preserving ordinary lighting and
-Bluetooth audio. It supports display power, digit/logo/symbol grid masks, brightness
-0–7, right-side-lighting-control following, and all eight raw grid bytes. A live
-digits-only raw frame proved the visible wordmark is illuminated by the clock itself,
-so only whole-display off guarantees it is fully dark. See
-[docs/display-firmware.md](docs/display-firmware.md) before installing it.
-
-Setting tools read state back when the protocol allows it. Media `C2` is one-way, but the tool also queries `C3` playing state; that can verify play/pause, not track changes. Clock sync reports a device success acknowledgement but `applied` remains unknown because the protocol has no clock readback. A timeout, malformed confirmation, or connection loss after any write is reported as an uncertain outcome. Firmware 1.3.0 restarts Bluetooth after an LDAC change and may invalidate the tested host bond, so re-pair Classic audio and call `qd35_get_status` to verify the requested mode. The tool avoids the restart entirely when the requested mode is already active.
-
-## Configuration
-
-| Variable | Default | Meaning |
-|---|---:|---|
-| `QD35_TRANSPORT` | `bleak` | `bleak` for hardware or `fake` for simulation |
-| `QD35_DEVICE` | auto | BLE address allowlist/target |
-| `QD35_ADAPTER` | system default | Optional BlueZ adapter such as `hci1` |
-| `QD35_ENABLE_WRITES` | `0` | Enable ordinary state changes |
-| `QD35_ENABLE_DANGEROUS` | `0` | Enable reset, power-off, and audio disconnect |
-| `QD35_CUSTOM_DISPLAY_FIRMWARE` | `0` | Advertise/send private display controls only after installing the exact patch |
-| `QD35_ENABLE_FIRMWARE_INSTALL` | `0` | Enable fixed patch-install and stock-restore MCP tools; both write gates are also required |
-| `QD35_SCAN_TIMEOUT` | `8` | Discovery time in seconds |
-| `QD35_REQUEST_TIMEOUT` | `4` | Per-command response timeout |
-| `QD35_TIMEZONE` | persisted/system | Override automatic IANA timezone resolution |
-| `QD35_TIMEZONE_STATE_PATH` | XDG state dir | Override the mode-0600 persistent timezone file |
-| `QD35_ALARM_ALLOW_REMOTE_AUDIO` | `0` | Permit public HTTP(S) alarm streams after public-IP validation |
-| `QD35_ALARM_ALLOWED_HOSTS` | unset | Comma-separated exact host allowlist for remote alarm streams |
-| `QD35_ALARM_MEDIA_DIR` | unset | Directory containing allowed local alarm audio files |
-| `QD35_ALARM_STATE_PATH` | XDG state dir | Override persistent alarm JSON location |
-| `QD35_ALARM_UNIT_DIR` | XDG user units | Override systemd user-unit directory, primarily for tests |
-
-The first timezone is resolved from `QD35_TIMEZONE`, then the persisted MCP state, then the operating system. `qd35_set_timezone` updates that persistent state so container or service-manager timezone differences cannot silently shift future speaker clock syncs. Alarm creation also persists its named timezone. Logs go to stderr; stdout remains reserved for MCP messages.
-
-## Troubleshooting
-
-- **No device found:** keep the speaker powered on and close Edifier Connect. The BLE advertisement may have no local name, so name-only scanners miss it. If it remains absent after a Bluetooth restart, reconnect the separate Classic audio device (`EDIFIER QD35`); firmware 1.3.0 resumed its BLE control advertisement after the Classic link returned.
-- **Permission error:** ensure the user session can access BlueZ over D-Bus. Test with `bluetoothctl scan le`.
-- **BlueZ 5.87 crashes during discovery:** update to BlueZ 5.88 or newer. BlueZ 5.87 has a known UUID-filter crash; this server avoids it by scanning broadly and filtering `a400` in-process.
-- **Device busy:** only one controller may hold the BLE connection. Close the phone app and retry.
-- **LDAC disconnect:** expected. On tested firmware, an actual LDAC change invalidated the old Classic bond. Remove that stale host pairing, pair again, then call `qd35_get_status`. The speaker itself recovered without a physical power-cycle.
-- **Audio is not connected:** BLE control and Classic Bluetooth audio are separate links.
-
-See [docs/alarm-clock.md](docs/alarm-clock.md) for pairing, sunrise behavior, stream security, persistence, and operational limits.
-
-See [docs/display-firmware.md](docs/display-firmware.md) for the exact-hash build,
-install, rollback, raw-grid interface, and live validation record. The repository
-contains original patch source and deterministic patch bytes, never Edifier's image.
-
-See [docs/app-features.md](docs/app-features.md), [docs/protocol.md](docs/protocol.md), and [docs/hardware-validation.md](docs/hardware-validation.md) for the evidence and current limits.
+If the speaker is missing, close the phone app, make sure it’s powered on, and try discovery.
+After an LDAC change or Bluetooth restart, reconnect Classic audio if the BLE advertisement
+stays absent. See the [troubleshooting reference](docs/mcp.md#troubleshooting).
 
 ## Development
 
 ```bash
-uv sync --extra dev
+uv sync --extra dev --locked
 uv run ruff check .
-uv run pytest
+uv run pytest -q
 uv build
 ```
 
-Physical checks are opt-in and never run in CI:
+Use `QD35_TRANSPORT=fake` to try the MCP interface without hardware. Physical tests are opt-in.
+See [contributing](CONTRIBUTING.md) for the hardware commands and evidence guidelines.
 
-```bash
-QD35_HARDWARE=1 QD35_DEVICE=<ble-address> uv run pytest tests/hardware
-QD35_HARDWARE=1 QD35_HARDWARE_WRITES=1 QD35_ENABLE_WRITES=1 \
-  QD35_DEVICE=<ble-address> uv run pytest tests/hardware
-```
-
-Custom-light hardware validation is separately gated because it replaces the installed Extended asset (the visible ordinary effect is restored afterward):
-
-```bash
-QD35_HARDWARE=1 QD35_HARDWARE_WRITES=1 QD35_HARDWARE_CUSTOM_LIGHTS=1 \
-  QD35_ENABLE_WRITES=1 QD35_DEVICE=<ble-address> \
-  uv run pytest tests/hardware -k custom_light
-```
-
-Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and do not submit proprietary app assets, personal Bluetooth identifiers, or unverified command mappings as facts.
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+MIT licensed. Independently developed and unaffiliated with Edifier. [License](LICENSE)

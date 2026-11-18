@@ -23,7 +23,7 @@ This inventory combines the model-specific Edifier Connect operation manual, the
 | Bluetooth disconnect | Disconnect Classic audio | Live-verified behind dangerous-operation gate |
 | Power off | Remote shutdown; no remote power-on | Live-verified behind dangerous-operation gate |
 | Factory reset | Clear settings and pairing information | Live-verified with marked settings and fresh pairing |
-| Firmware update | Signed model/version lookup, download, and BLE OTA | Official 1.3.0 image recovered; installed 1.3.0 is current; flashing remains excluded pending recovery and power-loss validation |
+| Firmware update | Signed model/version lookup, download, and BLE OTA | General updates are outside the MCP surface. Separately gated tools install the optional patch or restore the exact pinned 1.3.0 image. See [display firmware](display-firmware.md). |
 | Manual/store/profile | App navigation and web content | Not speaker controls |
 
 The 2023 app manual presents ten visual labels/modes. Firmware 1.3.0 directly reports seven selectable effect records in lighting group 1. Four downloadable animations live inside effect 7 (Extended), rather than being additional `6B` effect IDs. The MCP preserves that distinction and uses live-reported IDs.

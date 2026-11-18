@@ -144,9 +144,9 @@ A live initialized BLE listener then captured physical side-control notification
 the volume dial emitted `66 10 04` and `66 10 00`, while the lighting dial emitted
 three `6B` settings at 20%, 10%, and 0%. Pressing the lighting control at zero emitted
 another `6B` setting even though the value did not change, confirming button detection
-does not depend on a visible brightness change. The alarm's idle-event watcher treats
-those opcodes as a ten-minute snooze while excluding notifications generated
-synchronously by its own writes. The initial uninitialized listener saw only media
+does not depend on a visible brightness change. The current alarm watcher requires
+a fresh readback of a changed control value, so a same-value press is ignored.
+See [alarm snooze behavior](alarm-clock.md#snooze). The initial uninitialized listener saw only media
 status; running the normal D8/state initialization before listening was required to
 reproduce the app's event behavior. Input/EQ/playback button notifications remain to
 be exercised live, although their app-confirmed state opcodes are included in the
@@ -197,7 +197,12 @@ Classic A2DP remained active.
 
 ## Safety and remaining validation
 
-Firmware 1.3.0 is the version reported by this speaker and the version used by Edifier's current QD35 custom-light catalog. Replaying Edifier Connect's signed OTA lookup recovered the official 40,471-byte QD35 1.3.0 Cortex-M image, and a live query for installed version 1.3.0 returned no newer update. The image and application establish the single-image start frame and 512-byte transfer block size, but update remains excluded from the agent surface because rollback, bootloader recovery, power-loss behavior, and integrity enforcement are still unverified. See [firmware-analysis.md](firmware-analysis.md).
+Firmware 1.3.0 is the version reported by the tested speaker. The signed OTA lookup
+returned the official 40,471-byte Cortex-M image and offered no newer version at
+the time of testing. The MCP exposes only fixed-purpose, gated patch install and
+stock restore against the pinned 1.3.0 source. General OTA and power-loss recovery
+are outside the supported workflow. See [display firmware](display-firmware.md)
+and [firmware analysis](firmware-analysis.md).
 
 Run unit/simulator checks with `uv run pytest`. Hardware tests are intentionally manual because they operate a real nearby speaker.
 

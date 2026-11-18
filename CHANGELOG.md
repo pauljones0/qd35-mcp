@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Confirm physical snooze with fresh speaker readback and rearm the snooze timer on every retry.
+- Verify PipeWire audio routing before the speaker volume rises. Retry failed playback, preserve
+  the scheduled cutoff after a late start, and skip expired bedtime and wake windows.
+- Coordinate BLE transactions across processes and give every alarm an expiring Classic-audio
+  lease. Expired owners stop reconnecting, and an old run cannot disconnect a newer one.
+- Keep the existing 39 MCP tool schemas, organize the adapters by function, and add an offline
+  `qd35://guide` resource. Separate the alarm runner from the MCP adapter.
+
 ## 0.1.0 - 2026-11-17
 
 - Initial local stdio MCP server.
