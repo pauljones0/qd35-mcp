@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Sequence
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
@@ -11,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from . import constants as c
 from .animations import (
+    DIAGNOSTIC_ANIMATION_NAMES,
     GeneratedAnimation,
     build_creative_animation,
     build_diagnostic_animation,
@@ -35,6 +37,7 @@ from .display import (
 )
 from .errors import (
     DangerousWritesDisabled,
+    DeviceNotFound,
     OutcomeUnknown,
     ProtocolError,
     QD35Error,
@@ -53,6 +56,7 @@ from .firmware_patch import (
     patch_image,
     sha256,
 )
+from .ownership import SpeakerOwnership
 from .protocol import (
     parse_address,
     parse_audio_status,
@@ -88,25 +92,22 @@ def serialized_mutation(method: Any) -> Any:
 
     @wraps(method)
     async def wrapped(self: QD35Service, *args: object, **kwargs: object) -> object:
-        async with self._mutation_lock:
-            self._transaction_active = True
-            self._transaction_identity = None
-            self._transaction_mutated = False
-            try:
-                return await method(self, *args, **kwargs)
-            finally:
-                self._transaction_active = False
-                self._transaction_identity = None
-                self._transaction_mutated = False
+        async with self._transaction():
+            return await method(self, *args, **kwargs)
 
     return wrapped
 
 
 class QD35Service:
-    def __init__(self, transport: Transport, config: Config) -> None:
+    def __init__(
+        self, transport: Transport, config: Config, ownership: SpeakerOwnership | None = None
+    ) -> None:
         self.transport = transport
         self.config = config
         self._mutation_lock = asyncio.Lock()
+        self._ownership = ownership
+        self._ble_locks: AsyncExitStack | None = None
+        self._locked_address: str | None = None
         self._connected_device: dict[str, object] | None = None
         self._verified_identity: tuple[str, int] | None = None
         self._transaction_active = False
@@ -124,6 +125,42 @@ class QD35Service:
         self._display_grid: list[int | None] = [None] * 8
         self._display_session_identity: tuple[str, int] | None = None
 
+    @asynccontextmanager
+    async def _transaction(self):
+        async with self._mutation_lock, AsyncExitStack() as locks:
+            self._ble_locks = locks
+            self._transaction_active = True
+            try:
+                yield
+            finally:
+                self._transaction_active = False
+                self._transaction_identity = None
+                self._transaction_mutated = False
+                self._locked_address = None
+                self._ble_locks = None
+
+    async def _lock_ble_target(self) -> str | None:
+        identity = self.transport.connection_identity
+        if self._ownership is None:
+            return self.config.device
+        if self._locked_address is not None:
+            return self._locked_address
+        address = self.config.device or (identity[0] if identity else None)
+        if address is None:
+            candidates = await self.transport.discover(self.config.scan_timeout)
+            if not candidates:
+                raise DeviceNotFound("No QD35 advertising the a400 service was found")
+            if len(candidates) != 1:
+                addresses = ", ".join(candidate.address for candidate in candidates)
+                raise DeviceNotFound(
+                    f"Multiple QD35 candidates found; set QD35_DEVICE: {addresses}"
+                )
+            address = candidates[0].address
+        assert self._ble_locks is not None
+        await self._ble_locks.enter_async_context(self._ownership.lock("ble", address))
+        self._locked_address = address
+        return address
+
     async def discover(self, timeout: float | None = None) -> dict[str, object]:
         timeout_value = self.config.scan_timeout if timeout is None else timeout
         if not 0 < timeout_value <= 300:
@@ -133,7 +170,15 @@ class QD35Service:
         return {"devices": [device.to_dict() for device in devices], "count": len(devices)}
 
     async def ensure_connected(self) -> dict[str, object]:
-        device = await self.transport.connect(self.config.device)
+        async with self._transaction():
+            return await self._ensure_connected()
+
+    async def _ensure_connected(self) -> dict[str, object]:
+        address = await self._lock_ble_target()
+        device = await self.transport.connect(address)
+        locked = self._locked_address
+        if locked is not None and device.address.upper() != locked.upper():
+            raise ProtocolError("Bluetooth transport connected to an unlocked speaker")
         result = device.to_dict()
         if self._verified_identity != self.transport.connection_identity:
             self._verified_identity = None
@@ -146,7 +191,9 @@ class QD35Service:
         return result
 
     async def disconnect(self) -> dict[str, object]:
-        async with self._mutation_lock:
+        async with self._transaction():
+            if self.transport.connected:
+                await self._lock_ble_target()
             await self.transport.disconnect()
         return {"connected": False}
 
@@ -162,10 +209,14 @@ class QD35Service:
                     "Bluetooth session changed during one semantic transaction; "
                     "refusing to reconnect and continue on a possibly different speaker"
                 )
-            await self.ensure_connected()
+            await self._ensure_connected()
+        else:
+            await self._lock_ble_target()
         identity = self.transport.connection_identity
         if identity is None:
             raise ProtocolError("Bluetooth transport has no active connection identity")
+        if self._locked_address is not None and identity[0].upper() != self._locked_address.upper():
+            raise ProtocolError("Bluetooth transport changed its locked speaker")
         if self._transaction_active:
             if self._transaction_identity is None:
                 self._transaction_identity = identity
@@ -189,7 +240,7 @@ class QD35Service:
         if self._verified_identity is not None and self._verified_identity == identity:
             return {"verified": True, "address": identity[0], "cached": True}
         if not self.transport.connected:
-            await self.ensure_connected()
+            await self._ensure_connected()
         identity = self.transport.connection_identity
         if identity is None:
             raise ProtocolError("Bluetooth transport has no active connection identity")
@@ -260,19 +311,22 @@ class QD35Service:
             )
 
     async def status(self) -> dict[str, object]:
-        async with self._mutation_lock:
-            self._transaction_active = True
-            self._transaction_identity = None
-            self._transaction_mutated = False
-            try:
-                return await self._status_locked()
-            finally:
-                self._transaction_active = False
-                self._transaction_identity = None
-                self._transaction_mutated = False
+        async with self._transaction():
+            return await self._status_locked()
+
+    async def alarm_control(self, field: str) -> dict[str, object]:
+        """Read one side-control setting without running the full status sweep."""
+        opcode, parser = {
+            "volume": (c.QUERY_VOLUME, parse_volume),
+            "input": (c.QUERY_INPUT, parse_input),
+            "eq_preset": (c.QUERY_EQ_PRESET, parse_eq_preset),
+            "lighting": (c.QUERY_LIGHT, parse_light),
+        }[field]
+        async with self._transaction():
+            return parser(await self._request(opcode))
 
     async def _status_locked(self) -> dict[str, object]:
-        device = await self.ensure_connected()
+        device = await self._ensure_connected()
         self._transaction_identity = self.transport.connection_identity
 
         async def read(opcode: int, parser: Any) -> object:
@@ -326,7 +380,7 @@ class QD35Service:
         }
 
     async def capabilities(self) -> dict[str, object]:
-        async with self._mutation_lock:
+        async with self._transaction():
             raw = await self._request(c.QUERY_CAPABILITIES)
             decoded = parse_capabilities(raw)
         return {
@@ -405,7 +459,7 @@ class QD35Service:
         }
 
     async def display_status(self) -> dict[str, object]:
-        """Return the last acknowledged patch state; the stock protocol has no readback."""
+        """Return the last requested display state and whether the command was echoed."""
         return {
             "available": self.config.custom_display_firmware,
             "state_known_this_process": self._display_state_known,
@@ -415,12 +469,25 @@ class QD35Service:
             "volatile": True,
             "note": (
                 "The patch resets to display on, clock/logo/symbols on, brightness 7 after a "
-                "speaker power cycle. Values here are locally retained acknowledgements. "
+                "speaker power cycle. Values here are locally retained requests; the "
+                "ordinary lighting reply does not confirm the display command. "
                 "The logo grid can be masked, but the visible wordmark remains illuminated "
                 "whenever clock digits are lit; whole-display off is the only verified "
                 "full-extinction state."
             ),
         }
+
+    async def _display_request(self, payload: bytes) -> tuple[bytes, bool]:
+        response = await self._request(c.SET_LIGHT, payload)
+        echoed = response == payload
+        if not echoed:
+            # The installed patch reports ordinary lighting state on tested hardware.
+            # Reject malformed responses, but don't mistake this for a private echo.
+            try:
+                parse_light_setting(response)
+            except ProtocolError as exc:
+                raise OutcomeUnknown("display write returned an invalid lighting reply") from exc
+        return response, echoed
 
     async def display_firmware_info(self) -> dict[str, object]:
         """Describe the bundled original patch and its fixed install contract."""
@@ -472,16 +539,17 @@ class QD35Service:
             elif value is False:
                 flags &= ~bit
         level = self._display_brightness if brightness is None else brightness
-        response = await self._request(c.SET_LIGHT, state_payload(flags, level))
+        response, echoed = await self._display_request(state_payload(flags, level))
         self._display_flags = flags
         self._display_brightness = level
-        self._display_state_known = True
+        self._display_state_known = echoed
         self._display_session_identity = self.transport.connection_identity
         return {
             "acknowledged": True,
             "applied": None,
             "state": describe_flags(flags, level),
             "acknowledgement_hex": response.hex(),
+            "reply_confirms_command": echoed,
             "device_readback": False,
         }
 
@@ -489,8 +557,8 @@ class QD35Service:
     async def write_display_grid_byte(self, index: int, value: int) -> dict[str, object]:
         """Write one raw CMS1640 grid byte; raw mode is controlled separately."""
         self._display_write_allowed(dangerous=True)
-        response = await self._request(c.SET_LIGHT, grid_payload(index, value))
-        self._display_grid[index] = value
+        response, echoed = await self._display_request(grid_payload(index, value))
+        self._display_grid[index] = value if echoed else None
         self._display_session_identity = self.transport.connection_identity
         return {
             "acknowledged": True,
@@ -500,6 +568,7 @@ class QD35Service:
             "value_hex": f"0x{value:02X}",
             "raw_mode": bool(self._display_flags & DISPLAY_RAW_MODE),
             "acknowledgement_hex": response.hex(),
+            "reply_confirms_command": echoed,
             "device_readback": False,
         }
 
@@ -507,10 +576,10 @@ class QD35Service:
     async def reset_display(self) -> dict[str, object]:
         """Restore the patch's safe stock-equivalent volatile defaults."""
         self._display_write_allowed()
-        response = await self._request(c.SET_LIGHT, reset_payload())
+        response, echoed = await self._display_request(reset_payload())
         self._display_flags = DISPLAY_DEFAULT_FLAGS
         self._display_brightness = 7
-        self._display_state_known = True
+        self._display_state_known = echoed
         self._display_grid = [None] * 8
         self._display_session_identity = self.transport.connection_identity
         return {
@@ -518,6 +587,7 @@ class QD35Service:
             "applied": None,
             "state": describe_flags(self._display_flags, self._display_brightness),
             "acknowledgement_hex": response.hex(),
+            "reply_confirms_command": echoed,
             "device_readback": False,
         }
 
@@ -530,7 +600,7 @@ class QD35Service:
                 "Firmware installation requires an explicit QD35_DEVICE address"
             )
         patched = patch_image(stock_image)
-        await self.ensure_connected()
+        await self._ensure_connected()
         verified = await self._verify_qd35_target()
         identity = self.transport.connection_identity
         if identity is None or identity[0].lower() != self.config.device.lower():
@@ -562,7 +632,7 @@ class QD35Service:
             raise ValueError("restore requires the exact supported official QD35 1.3.0 image")
         if not self.config.device:
             raise ProtocolError("Firmware restoration requires an explicit QD35_DEVICE address")
-        await self.ensure_connected()
+        await self._ensure_connected()
         verified = await self._verify_qd35_target()
         identity = self.transport.connection_identity
         if identity is None or identity[0].lower() != self.config.device.lower():
@@ -1169,18 +1239,7 @@ class QD35Service:
                 sha256=animation.sha256,
                 start_asset_id=animation.start_asset_id,
             )
-        elif preset in {
-            "pixel_chase",
-            "address_mapper",
-            "rgb_bars",
-            "timing_sweep",
-            "fourth_byte_sweep",
-            "spiral_color_probe",
-            "spiral_index_probe",
-            "spiral_fourth_probe",
-            "spiral_fast_probe",
-            "spiral_slow_probe",
-        }:
+        elif preset in DIAGNOSTIC_ANIMATION_NAMES:
             if palette_key is not None:
                 raise ValueError("diagnostic animations do not accept palette_key")
             animation = build_diagnostic_animation(preset)

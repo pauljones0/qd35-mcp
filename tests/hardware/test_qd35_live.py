@@ -11,7 +11,7 @@ import os
 import pytest
 
 from qd35_mcp import constants as c
-from qd35_mcp.server import create_service
+from qd35_mcp.factory import create_service
 
 
 def enabled(name: str) -> bool:

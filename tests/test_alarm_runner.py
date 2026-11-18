@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from dataclasses import replace
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from qd35_mcp import alarm_runner
 from qd35_mcp.alarms import SunriseAlarm
+from qd35_mcp.errors import ProtocolError
 
 
 def alarm(**changes: object) -> SunriseAlarm:
@@ -65,6 +71,11 @@ class FakeService:
             },
             "playback": {"value": 3, "playing": False},
         }
+
+    async def alarm_control(self, field: str) -> object:
+        if field == "volume" and self.emit_manual_control and self.event_calls >= 2:
+            return {"current": self.manual_volume}
+        return (await self.status())[field]
 
     async def sync_clock(self, value: str, timezone: str) -> dict[str, object]:
         self.clock_formats.append(value)
@@ -198,11 +209,14 @@ async def test_duplicate_control_state_does_not_snooze(
     service.emit_manual_control = True
     service.manual_volume = 8
     monkeypatch.setattr(alarm_runner, "create_service", lambda: service)
+    clock = iter((0, 0, 0, 60, 60))
+    monkeypatch.setattr(alarm_runner, "time", SimpleNamespace(monotonic=lambda: next(clock)))
 
-    result = await alarm_runner.run_alarm(alarm(), tick_seconds=0.01)
+    result = await alarm_runner.run_alarm(alarm(sunrise_minutes=1), tick_seconds=0.01)
 
     assert result["completed"] is True
     assert "snoozed_by_physical_control" not in result
+    assert service.event_calls >= 2
 
 
 def test_display_patch_ack_is_not_manual_control() -> None:
@@ -214,24 +228,24 @@ def test_display_patch_ack_is_not_manual_control() -> None:
     assert alarm_runner._manual_control_changed(event, {}) is False
 
 
-def test_changed_light_event_is_manual_control() -> None:
-    expected = alarm_runner._control_expectations(
-        {
-            "lighting": {
-                "group": 1,
-                "selected_effect_id": 6,
-                "effects": [
-                    {
-                        "id": 6,
-                        "raw_color": [255, 106, 32],
-                        "brightness": 20,
-                        "wire_speed": 255,
-                    }
-                ],
-            }
+async def test_delayed_light_event_requires_fresh_confirmation() -> None:
+    service = FakeService()
+    expected = {
+        "lighting": {
+            "group": 1,
+            "selected_effect_id": 6,
+            "effects": [
+                {
+                    "id": 6,
+                    "raw_color": [255, 106, 32],
+                    "brightness": 20,
+                    "wire_speed": 255,
+                }
+            ],
         }
-    )
+    }
     event = {
+        "sequence": 1,
         "opcode": alarm_runner.c.SET_LIGHT,
         "payload_hex": "0106ff6a200aff",
         "parsed": {
@@ -242,7 +256,24 @@ def test_changed_light_event_is_manual_control() -> None:
             "wire_speed": 255,
         },
     }
-    assert alarm_runner._manual_control_changed(event, expected) is True
+
+    async def events(since_sequence: int, limit: int) -> dict[str, object]:
+        return {"latest_sequence": 1, "events": [event] if since_sequence == 0 else []}
+
+    current = expected["lighting"]
+
+    async def read_light(field: str) -> dict[str, object]:
+        assert field == "lighting"
+        return current
+
+    service.events = events
+    service.alarm_control = read_light
+    assert await alarm_runner._wait_for_manual_control(service, 0, 0.01, expected) == (1, None)
+    current = {
+        **expected["lighting"],
+        "effects": [{**expected["lighting"]["effects"][0], "brightness": 10}],
+    }
+    assert await alarm_runner._wait_for_manual_control(service, 0, 0.01, expected) == (1, event)
 
 
 class FakePlayer:
@@ -250,6 +281,7 @@ class FakePlayer:
 
     def __init__(self) -> None:
         self.returncode: int | None = None
+        self.stdout = asyncio.StreamReader()
 
     def terminate(self) -> None:
         self.returncode = 0
@@ -270,6 +302,7 @@ async def test_audio_alarm_releases_classic_after_post_wake_window(
     player = FakePlayer()
     release = {"disconnected": True, "keepalive": {"applied": True}}
     monkeypatch.setattr(alarm_runner, "create_service", lambda: service)
+    monkeypatch.setattr(alarm_runner, "_connect_classic", lambda _address: _async_value(None))
     monkeypatch.setattr(alarm_runner, "_start_audio", lambda _alarm: _async_value(player))
     monkeypatch.setattr(
         alarm_runner,
@@ -285,6 +318,143 @@ async def test_audio_alarm_releases_classic_after_post_wake_window(
     assert result["bluetooth_disconnected"] is True
     assert result["classic_release"] == release
     assert service.inputs == ["bluetooth"]
+
+
+@pytest.mark.parametrize("startup_delay", [0, 3])
+async def test_late_alarm_keeps_original_audio_cutoff(monkeypatch, startup_delay) -> None:
+    service = FakeService()
+    player = FakePlayer()
+    start = datetime(2026, 11, 18, 14, 30, tzinfo=UTC)
+    wake = datetime(2026, 11, 18, 15, tzinfo=UTC)
+    now = datetime(2026, 11, 18, 15, 29, 58, tzinfo=UTC).timestamp()
+    monkeypatch.setattr(alarm_runner, "time", SimpleNamespace(time=lambda: now))
+    monkeypatch.setattr(alarm_runner, "create_service", lambda: service)
+    monkeypatch.setattr(alarm_runner, "_connect_classic", lambda _address: _async_value(None))
+
+    async def start_audio(_alarm):
+        nonlocal now
+        now += startup_delay
+        return player
+
+    monkeypatch.setattr(alarm_runner, "_start_audio", start_audio)
+    monkeypatch.setattr(
+        alarm_runner,
+        "_release_classic_audio",
+        lambda _address: _async_value({"disconnected": True}),
+    )
+    waits = []
+
+    async def reached_cutoff(operation, timeout):
+        nonlocal now
+        if player.returncode is not None:
+            return await operation
+        operation.close()
+        waits.append(timeout)
+        now += timeout
+        raise TimeoutError
+
+    monkeypatch.setattr(alarm_runner.asyncio, "wait_for", reached_cutoff)
+    result = await alarm_runner.run_alarm(
+        alarm(audio_source="/music.wav", sunrise_minutes=30, target_speaker_volume=4),
+        scheduled_window=(start, wake),
+    )
+    if startup_delay:
+        assert waits == []
+        assert not result["completed"]
+        assert service.volumes == [0]
+    else:
+        assert waits == [2]
+        assert result["completed"]
+        assert service.volumes == [0, 4]
+
+
+@pytest.mark.parametrize("prepare", [True, False])
+def test_expired_timer_does_not_touch_speaker(monkeypatch, prepare, capsys) -> None:
+    plan = alarm(sunrise_minutes=30, wake_time="09:00", weekdays=("wed",))
+
+    class Morning(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 18, 16, tzinfo=UTC)
+
+    def unexpected_call(*args, **kwargs):
+        raise AssertionError("an expired timer must not run Bluetooth work")
+
+    monkeypatch.setattr(alarm_runner, "datetime", Morning)
+    monkeypatch.setattr(
+        alarm_runner, "AlarmStore", lambda _: SimpleNamespace(load=lambda: {"test": plan})
+    )
+    monkeypatch.setattr(alarm_runner, "run_alarm", unexpected_call)
+    monkeypatch.setattr(alarm_runner, "prepare_overnight", unexpected_call)
+    monkeypatch.setattr(alarm_runner, "_parse_args", lambda: SimpleNamespace(
+        alarm="test", state=Path("alarms.json"), prepare=prepare, snoozed=False,
+    ))
+    trigger = "qd35-alarm-test-prepare.timer" if prepare else "qd35-alarm-test.timer"
+    monkeypatch.setenv("TRIGGER_UNIT", trigger)
+    alarm_runner.main()
+    assert "window has passed" in capsys.readouterr().err
+
+
+async def test_failed_clock_and_lighting_do_not_prevent_audio_or_release(monkeypatch) -> None:
+    class FailingLights(FakeService):
+        async def sync_clock(self, *args):
+            raise ProtocolError("clock query failed")
+
+        async def set_light(self, **values):
+            return {"applied": False}
+
+    service = FailingLights()
+    player = FakePlayer()
+    monkeypatch.setattr(alarm_runner, "create_service", lambda: service)
+    monkeypatch.setattr(alarm_runner, "_connect_classic", lambda _address: _async_value(None))
+    monkeypatch.setattr(alarm_runner, "_start_audio", lambda _alarm: _async_value(player))
+    monkeypatch.setattr(
+        alarm_runner,
+        "_release_classic_audio",
+        lambda _address: _async_value({"disconnected": True}),
+    )
+    result = await alarm_runner.run_alarm(alarm(audio_source="/music.wav", post_wake_minutes=0))
+
+    assert result["audio_started"] and result["bluetooth_disconnected"]
+    assert not result["completed"]
+    assert set(result["errors"]) == {"clock", "lighting"}
+
+
+async def test_player_exit_during_fade_is_retried_and_reported(monkeypatch) -> None:
+    service = FakeService()
+    player = FakePlayer()
+    attempts: list[int] = []
+    clock = iter((0, 0, 0, 60, 60))
+    monkeypatch.setattr(alarm_runner, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+    monkeypatch.setattr(alarm_runner, "create_service", lambda: service)
+    monkeypatch.setattr(alarm_runner, "_connect_classic", lambda _address: _async_value(None))
+    monkeypatch.setattr(
+        alarm_runner,
+        "_release_classic_audio",
+        lambda _address: _async_value({"disconnected": True}),
+    )
+
+    async def start(_alarm):
+        attempts.append(1)
+        if len(attempts) > 1:
+            raise RuntimeError("radio unavailable")
+        return player
+
+    async def idle(_service, cursor, *_args):
+        player.returncode = 2
+        return cursor, None
+
+    monkeypatch.setattr(alarm_runner, "_start_audio", start)
+    monkeypatch.setattr(alarm_runner, "_wait_for_manual_control", idle)
+    result = await alarm_runner.run_alarm(
+        alarm(sunrise_minutes=1, audio_fade_minutes=1, audio_source="/music.wav")
+    )
+
+    assert len(attempts) == 3
+    assert not result["completed"]
+    assert result["errors"]["audio"] == "radio unavailable"
+    assert result["bluetooth_disconnected"]
+    assert service.volumes == [0, 0, 0]
 
 
 async def test_bedtime_reenables_keepalive_for_audio_alarm(
@@ -316,10 +486,9 @@ async def test_start_audio_selects_exact_native_pipewire_sink(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     player = FakePlayer()
+    player.stdout.feed_data(b"a log message\nQD35_ALARM_AUDIO_READY 44100\n")
+    player.stdout.feed_eof()
     command: list[str] = []
-
-    async def connected(_address: str) -> None:
-        return None
 
     async def sink(_address: str) -> str:
         return "bluez_output.AA_BB_CC_DD_EE_FF.1"
@@ -328,13 +497,9 @@ async def test_start_audio_selects_exact_native_pipewire_sink(
         command.extend(arguments)
         return player
 
-    async def no_sleep(_seconds: float) -> None:
-        return None
-
-    monkeypatch.setattr(alarm_runner, "_connect_classic", connected)
     monkeypatch.setattr(alarm_runner, "_find_audio_sink", sink)
+    monkeypatch.setattr(alarm_runner, "_confirm_audio_route", lambda *_: _async_value(None))
     monkeypatch.setattr(alarm_runner.asyncio, "create_subprocess_exec", launch)
-    monkeypatch.setattr(alarm_runner.asyncio, "sleep", no_sleep)
 
     started = await alarm_runner._start_audio(
         alarm(audio_source="https://radio.example/stream")
@@ -342,9 +507,25 @@ async def test_start_audio_selects_exact_native_pipewire_sink(
 
     assert started is player
     assert "--no-config" in command
-    assert "--msg-level=all=warn" in command
+    assert "--msg-level=all=info" in command
     assert "--audio-device=pipewire/bluez_output.AA_BB_CC_DD_EE_FF.1" in command
     assert command[-2:] == ["--", "https://radio.example/stream"]
+
+
+async def test_audio_route_verifies_actual_sink_for_its_own_stream(monkeypatch) -> None:
+    stream_sink = 2
+
+    async def command(*args, **kwargs):
+        if args[-1] == "sinks":
+            return 0, '[{"index":1,"name":"qd35"},{"index":2,"name":"hdmi"}]'
+        return 0, json.dumps([{"sink": stream_sink, "properties": {"node.name": "qd35-test"}}])
+
+    monkeypatch.setattr(alarm_runner, "_run_command", command)
+    monkeypatch.setattr(alarm_runner.asyncio, "sleep", lambda _: _async_value(None))
+    with pytest.raises(RuntimeError, match="did not link"):
+        await alarm_runner._confirm_audio_route("qd35", "qd35-test")
+    stream_sink = 1
+    await alarm_runner._confirm_audio_route("qd35", "qd35-test")
 
 
 async def test_connect_classic_skips_redundant_connect_when_already_up(

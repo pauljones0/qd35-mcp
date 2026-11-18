@@ -22,6 +22,10 @@ class TransportError(QD35Error):
     """Bluetooth adapter, permission, scan, or connection failure."""
 
 
+class SpeakerBusy(TransportError):
+    """A QD35 process already owns an operation or alarm window."""
+
+
 class OutcomeUnknown(QD35Error):
     """A write was attempted but its physical outcome needs independent readback."""
 

@@ -4,6 +4,7 @@ import sys
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
+from qd35_mcp.animations import DIAGNOSTIC_ANIMATION_NAMES
 from qd35_mcp.config import Config
 from qd35_mcp.server import create_server
 from qd35_mcp.service import QD35Service
@@ -34,7 +35,7 @@ async def test_server_lifespan_releases_bluetooth_session() -> None:
     assert transport.connected is False
 
 
-async def test_real_stdio_server_contract() -> None:
+async def test_real_stdio_server_contract(tmp_path) -> None:
     params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "qd35_mcp"],
@@ -43,11 +44,17 @@ async def test_real_stdio_server_contract() -> None:
             "QD35_TRANSPORT": "fake",
             "QD35_ENABLE_WRITES": "1",
             "QD35_ENABLE_DANGEROUS": "1",
+            "QD35_TIMEZONE_STATE_PATH": str(tmp_path / "timezone.json"),
         },
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
+            resources = await session.list_resources()
+            assert [str(resource.uri) for resource in resources.resources] == ["qd35://guide"]
+            guide = await session.read_resource("qd35://guide")
+            assert "qd35_get_status" in guide.contents[0].text
+            assert "qd35_list_alarms" in guide.contents[0].text
             tools = await session.list_tools()
             names = {tool.name for tool in tools.tools}
             assert "qd35_get_status" in names
@@ -91,6 +98,9 @@ async def test_real_stdio_server_contract() -> None:
             assert by_name["qd35_set_light"].input_schema["properties"]["color_mode"]["anyOf"][0][
                 "enum"
             ] == ["light", "deep", "off", "on"]
+            assert by_name["qd35_apply_diagnostic_light"].input_schema["properties"]["pattern"][
+                "enum"
+            ] == list(DIAGNOSTIC_ANIMATION_NAMES)
             assert by_name["qd35_sync_clock"].annotations.idempotent_hint is False
             alarm_properties = by_name["qd35_create_sunrise_alarm"].input_schema[
                 "properties"

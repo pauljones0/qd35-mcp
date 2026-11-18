@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 from qd35_mcp.config import Config
-from qd35_mcp.server import create_service
+from qd35_mcp.factory import create_service
 
 
 async def install(source: Path, restore_stock: bool = False) -> dict[str, object]:

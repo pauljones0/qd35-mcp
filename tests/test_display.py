@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from qd35_mcp import constants as c
 from qd35_mcp.config import Config
 from qd35_mcp.display import (
     DISPLAY_CLOCK,
@@ -84,6 +85,21 @@ async def test_raw_grid_and_reset() -> None:
     assert reset["state"]["raw_mode"] is False
     assert transport.display_flags == DISPLAY_DEFAULT_FLAGS
     assert transport.display_grid == [0xFF] * 8
+
+
+async def test_generic_display_reply_is_compatible_but_does_not_confirm_command() -> None:
+    class GenericReply(FakeTransport):
+        async def request(self, opcode, payload=b"", timeout=4):
+            if opcode == c.SET_LIGHT:
+                return bytes.fromhex("010701000014ff")
+            return await super().request(opcode, payload, timeout)
+
+    service = QD35Service(GenericReply(), config())
+    result = await service.set_display(power=False)
+    assert result["acknowledged"] is True
+    assert result["reply_confirms_command"] is False
+    assert result["applied"] is None
+    assert (await service.display_status())["state_known_this_process"] is False
 
 
 @pytest.mark.asyncio

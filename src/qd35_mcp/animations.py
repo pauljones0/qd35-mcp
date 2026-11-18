@@ -567,7 +567,7 @@ def _embers() -> GeneratedAnimation:
     )
 
 
-_BUILDERS = {
+_DIAGNOSTIC_BUILDERS = {
     "pixel_chase": _pixel_chase,
     "address_mapper": _address_mapper,
     "rgb_bars": _rgb_bars,
@@ -580,6 +580,8 @@ _BUILDERS = {
     "spiral_slow_probe": _spiral_slow_probe,
 }
 
+DIAGNOSTIC_ANIMATION_NAMES = tuple(_DIAGNOSTIC_BUILDERS)
+
 _CREATIVE_BUILDERS = {
     "pac_man": _pac_man,
     "comet": _comet,
@@ -590,7 +592,7 @@ _CREATIVE_BUILDERS = {
 
 
 def list_diagnostic_animations() -> dict[str, object]:
-    animations = [builder() for builder in _BUILDERS.values()]
+    animations = [builder() for builder in _DIAGNOSTIC_BUILDERS.values()]
     return {
         "animations": [animation.to_dict() for animation in animations],
         "format": {
@@ -629,9 +631,10 @@ def list_diagnostic_animations() -> dict[str, object]:
 def build_diagnostic_animation(name: str) -> GeneratedAnimation:
     normalized = name.strip().lower().replace("-", "_")
     try:
-        animation = _BUILDERS[normalized]()
+        animation = _DIAGNOSTIC_BUILDERS[normalized]()
     except KeyError as exc:
-        raise ValueError(f"diagnostic animation must be one of: {', '.join(_BUILDERS)}") from exc
+        choices = ", ".join(DIAGNOSTIC_ANIMATION_NAMES)
+        raise ValueError(f"diagnostic animation must be one of: {choices}") from exc
     validate_animation(animation.data)
     return animation
 

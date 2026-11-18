@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime
 
 import pytest
 
@@ -9,15 +10,18 @@ from qd35_mcp.alarms import (
     AlarmStore,
     SunriseAlarm,
     SystemdUserTimers,
+    active_wake_window,
     alarm_start_schedule,
     bedtime_schedule,
     bedtime_systemd_calendar,
+    in_bedtime_window,
     perceptual_light_value,
     ramp_value,
     systemd_calendar,
     validate_audio_source,
 )
 from qd35_mcp.config import Config
+from qd35_mcp.errors import WritesDisabled
 from qd35_mcp.service import QD35Service
 from qd35_mcp.transport.fake import FakeTransport
 
@@ -84,6 +88,23 @@ def test_schedule_moves_to_previous_day_across_midnight() -> None:
         weekdays=("mon", "sun"),
     )
     assert alarm_start_schedule(alarm) == ("23:45", ("sat", "sun"))
+
+
+def test_bedtime_uses_last_occurrence_before_ramp() -> None:
+    alarm = sample_alarm(bedtime="06:45", weekdays=("mon",))
+    assert bedtime_schedule(alarm) == ("06:45", ("sun",))
+    assert in_bedtime_window(alarm, datetime(2026, 11, 15, 13, tzinfo=UTC))
+    assert not in_bedtime_window(alarm, datetime(2026, 11, 16, 12, 30, tzinfo=UTC))
+
+
+def test_wake_window_handles_midnight_and_expires_after_playback() -> None:
+    alarm = sample_alarm(wake_time="00:15", weekdays=("mon",), audio_source="/radio.mp3")
+    start = datetime(2026, 11, 16, 5, 45, tzinfo=UTC)
+    wake = datetime(2026, 11, 16, 6, 15, tzinfo=UTC)
+    assert active_wake_window(alarm, start) == (start, wake)
+    assert active_wake_window(alarm, datetime(2026, 11, 16, 6, 44, tzinfo=UTC)) == (start, wake)
+    assert active_wake_window(alarm, datetime(2026, 11, 16, 6, 45, tzinfo=UTC)) is None
+    assert active_wake_window(replace(alarm, audio_source=None), wake) is None
 
 
 def test_ramp_is_bounded_and_monotonic() -> None:
@@ -158,7 +179,7 @@ class FakeTimers:
             "active": bool(self.keepalive_installed) and self.keepalive_removed == 0,
         }
 
-    def install_keepalive(self, classic_device: str) -> None:
+    def install_keepalive(self, classic_device: str, *, start: bool = True) -> None:
         self.keepalive_installed.append(classic_device)
 
     def remove_keepalive(self) -> None:
@@ -214,7 +235,7 @@ async def test_manager_persists_and_controls_alarm(tmp_path) -> None:
     assert timers.stopped == ["weekday-wake", "weekday-wake"]
     assert timers.snoozed == [("weekday-wake", 10)]
     assert timers.removed == ["weekday-wake"]
-    assert timers.keepalive_removed == 1
+    assert timers.keepalive_removed == 0
 
 
 def test_systemd_units_include_separate_bedtime_preparation(tmp_path, monkeypatch) -> None:
@@ -225,6 +246,7 @@ def test_systemd_units_include_separate_bedtime_preparation(tmp_path, monkeypatc
     prepare_service = tmp_path / "units/qd35-alarm-weekday-wake-prepare.service"
     prepare_timer = tmp_path / "units/qd35-alarm-weekday-wake-prepare.timer"
     assert "--prepare" in prepare_service.read_text(encoding="utf-8")
+    assert f'--unit-dir "{timers.unit_dir}"' in prepare_service.read_text(encoding="utf-8")
     assert "OnCalendar=Sun,Mon,Tue,Wed,Thu *-*-* 22:00:00 America/Regina" in (
         prepare_timer.read_text(encoding="utf-8")
     )
@@ -243,7 +265,7 @@ def test_systemd_snooze_timer_targets_short_fade_service(tmp_path, monkeypatch) 
     text = timer.read_text(encoding="utf-8")
     assert "OnActiveSec=10min" in text
     assert "Unit=qd35-alarm-weekday-wake-snooze.service" in text
-    assert ("start", "qd35-alarm-weekday-wake-snooze.timer") in calls
+    assert ("restart", "qd35-alarm-weekday-wake-snooze.timer") in calls
 
 
 def test_physical_snooze_schedules_without_stopping_its_own_service(
@@ -257,4 +279,57 @@ def test_physical_snooze_schedules_without_stopping_its_own_service(
     timers.schedule_snooze("weekday-wake", 10)
 
     assert not any(call[:1] == ("stop",) for call in calls)
-    assert ("start", "qd35-alarm-weekday-wake-snooze.timer") in calls
+    assert ("restart", "qd35-alarm-weekday-wake-snooze.timer") in calls
+
+
+def test_install_removes_obsolete_bedtime_units_and_uses_safe_descriptions(tmp_path, monkeypatch):
+    timers = SystemdUserTimers(tmp_path, tmp_path / "alarms.json")
+    calls = []
+    monkeypatch.setattr(timers, "_run", lambda *args, **kwargs: calls.append(args))
+    timers.install(sample_alarm(name="Weekday Wake\nSecond line"))
+    assert "Second line" not in (tmp_path / "qd35-alarm-weekday-wake.service").read_text()
+    timers.install(sample_alarm(bedtime=None))
+    assert ("disable", "--now", "qd35-alarm-weekday-wake-prepare.timer") in calls
+    assert not list(tmp_path.glob("*-prepare.*"))
+
+
+def test_new_alarm_can_install_keepalive_without_connecting(tmp_path, monkeypatch):
+    timers = SystemdUserTimers(tmp_path, tmp_path / "alarms.json")
+    calls = []
+    monkeypatch.setattr(timers, "_run", lambda *args, **kwargs: calls.append(args))
+    timers.install_keepalive("AA:BB:CC:DD:EE:FF", start=False)
+    assert (tmp_path / "qd35-alarm-audio-keepalive.service").exists()
+    assert calls == [("daemon-reload",)]
+
+
+async def test_alarm_creation_respects_write_gate_and_reserved_names(tmp_path):
+    config = fake_config(writes_enabled=False, alarm_state_path=str(tmp_path / "alarms.json"))
+    service = QD35Service(FakeTransport(), config)
+    manager = AlarmManager(service, config, timers=FakeTimers())
+    args = ("07:00", None, "America/Regina", ["mon"], 30, 0, 100, "#FF6A20", "12h", None, 10, 4)
+    with pytest.raises(WritesDisabled):
+        await manager.create("Weekday Wake", *args)
+    manager = AlarmManager(service, replace(config, writes_enabled=True), timers=FakeTimers())
+    with pytest.raises(ValueError, match="reserved"):
+        await manager.create("Weekday Wake Snooze", *args)
+
+
+async def test_failed_alarm_update_restores_previous_timer_and_state(tmp_path):
+    class FailingTimers(FakeTimers):
+        def install(self, alarm):
+            if alarm.wake_time == "08:00":
+                raise RuntimeError("timer installation failed")
+            super().install(alarm)
+
+    config = fake_config(timezone_state_path=str(tmp_path / "timezone.json"))
+    service = QD35Service(FakeTransport(), config)
+    store = AlarmStore(tmp_path / "alarms.json")
+    timers = FailingTimers()
+    manager = AlarmManager(service, config, store=store, timers=timers)
+    old = sample_alarm()
+    store.save({old.alarm_id: old})
+    args = ("08:00", None, "America/Regina", ["mon"], 30, 0, 100, "#FF6A20", "12h", None, 10, 4)
+    with pytest.raises(RuntimeError, match="timer installation failed"):
+        await manager.create(old.name, *args)
+    assert timers.installed == [old]
+    assert store.load() == {old.alarm_id: old}
