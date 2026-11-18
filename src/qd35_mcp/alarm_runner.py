@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
+import sys
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -18,6 +20,7 @@ from .alarms import (
     perceptual_light_value,
     ramp_value,
 )
+from .display import DISPLAY_MAGIC, DISPLAY_RESET, DISPLAY_SET_STATE, DISPLAY_WRITE_GRID
 from .server import create_service
 
 _ALARM_ENVIRONMENT_KEYS = (
@@ -190,10 +193,122 @@ async def _latest_event_sequence(service: Any) -> int:
     return int(result.get("latest_sequence", 0))
 
 
+def _control_expectations(status: dict[str, object]) -> dict[str, object]:
+    """Extract only state that a physical side control can observably change."""
+    expected: dict[str, object] = {}
+    for key in ("volume", "input", "eq_preset", "lighting", "playback"):
+        value = status.get(key)
+        if isinstance(value, dict) and value.get("unavailable") is not True:
+            expected[key] = value
+    return expected
+
+
+def _remember_result(
+    expected: dict[str, object], key: str, result: dict[str, object], result_key: str
+) -> None:
+    value = result.get(result_key)
+    if isinstance(value, dict):
+        expected[key] = value
+
+
+def _is_display_patch_event(event: dict[str, object]) -> bool:
+    """Recognize acknowledgements carried over SET_LIGHT by the optional MCU patch."""
+    if event.get("opcode") != c.SET_LIGHT:
+        return False
+    payload_hex = event.get("payload_hex")
+    if not isinstance(payload_hex, str):
+        return False
+    try:
+        payload = bytes.fromhex(payload_hex)
+    except ValueError:
+        return False
+    return (
+        len(payload) == 7
+        and payload[1] == 0
+        and payload[2] in {DISPLAY_SET_STATE, DISPLAY_WRITE_GRID, DISPLAY_RESET}
+        and payload[6] == DISPLAY_MAGIC
+    )
+
+
+def _selected_light(lighting: object) -> dict[str, object] | None:
+    if not isinstance(lighting, dict):
+        return None
+    selected = lighting.get("selected_effect_id")
+    effects = lighting.get("effects")
+    if not isinstance(selected, int) or not isinstance(effects, list):
+        return None
+    for effect in effects:
+        if isinstance(effect, dict) and effect.get("id") == selected:
+            return effect
+    return None
+
+
+def _manual_control_changed(
+    event: dict[str, object], expected: dict[str, object]
+) -> bool:
+    """Return true only for a parsed state change, never for a duplicate notification."""
+    if _is_display_patch_event(event) or "parse_error" in event:
+        return False
+    parsed = event.get("parsed")
+    if not isinstance(parsed, dict):
+        return False
+    opcode = event.get("opcode")
+    if opcode == c.QUERY_VOLUME:
+        current = expected.get("volume")
+        return isinstance(current, dict) and parsed.get("current") != current.get("current")
+    if opcode == c.QUERY_INPUT:
+        current = expected.get("input")
+        return isinstance(current, dict) and (
+            parsed.get("group"), parsed.get("value")
+        ) != (current.get("group"), current.get("value"))
+    if opcode == c.QUERY_EQ_PRESET:
+        current = expected.get("eq_preset")
+        return isinstance(current, dict) and parsed.get("value") != current.get("value")
+    if opcode in {c.QUERY_LIGHT, c.RESET_LIGHT}:
+        current = expected.get("lighting")
+        current_selected = _selected_light(current)
+        parsed_selected = _selected_light(parsed)
+        if current_selected is None or parsed_selected is None:
+            return False
+        return (
+            parsed.get("group"),
+            parsed.get("selected_effect_id"),
+            parsed_selected.get("raw_color"),
+            parsed_selected.get("brightness"),
+            parsed_selected.get("wire_speed"),
+        ) != (
+            current.get("group"),  # type: ignore[union-attr]
+            current.get("selected_effect_id"),  # type: ignore[union-attr]
+            current_selected.get("raw_color"),
+            current_selected.get("brightness"),
+            current_selected.get("wire_speed"),
+        )
+    if opcode == c.SET_LIGHT:
+        current_selected = _selected_light(expected.get("lighting"))
+        if current_selected is None:
+            return False
+        return (
+            parsed.get("effect_id"),
+            parsed.get("raw_color"),
+            parsed.get("brightness"),
+            parsed.get("wire_speed"),
+        ) != (
+            current_selected.get("id"),
+            current_selected.get("raw_color"),
+            current_selected.get("brightness"),
+            current_selected.get("wire_speed"),
+        )
+    if opcode == c.QUERY_PLAYBACK:
+        current = expected.get("playback")
+        return isinstance(current, dict) and parsed.get("value") != current.get("value")
+    return False
+
+
 async def _wait_for_manual_control(
     service: Any,
     since_sequence: int,
     timeout: float,
+    expected: dict[str, object],
     *,
     ignore_playback_until: float = 0,
 ) -> tuple[int, dict[str, object] | None]:
@@ -217,7 +332,8 @@ async def _wait_for_manual_control(
                 and asyncio.get_running_loop().time() < ignore_playback_until
             ):
                 continue
-            return cursor, event
+            if _manual_control_changed(event, expected):
+                return cursor, event
 
 
 async def _apply_night_state(service: Any, alarm: SunriseAlarm) -> dict[str, object]:
@@ -270,6 +386,7 @@ async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[st
     try:
         await service.set_timezone(alarm.timezone, sync_now=False)
         await service.sync_clock(alarm.clock_format, alarm.timezone)
+        expected_controls = _control_expectations(await service.status())
         event_cursor = 0
         manual_event: dict[str, object] | None = None
         while True:
@@ -284,6 +401,7 @@ async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[st
                 )
                 if result.get("applied") is not True:
                     raise RuntimeError(f"sunrise light step was not verified: {result}")
+                _remember_result(expected_controls, "lighting", result, "lighting")
                 last_brightness = brightness
             if alarm.custom_display:
                 display_brightness = perceptual_light_value(0, 7, light_progress)
@@ -308,6 +426,7 @@ async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[st
                     muted = await service.set_volume(0)
                     if muted.get("applied") is not True:
                         raise RuntimeError(f"pre-audio mute was not verified: {muted}")
+                    _remember_result(expected_controls, "volume", muted, "volume")
                     # Select the audio source only when audio is due, after muting.
                     # set_input is a no-op when Bluetooth is already selected, which
                     # avoids the redundant source write correlated with the morning
@@ -315,9 +434,13 @@ async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[st
                     selected = await service.set_input("bluetooth")
                     if selected.get("applied") is not True:
                         raise RuntimeError(f"Bluetooth input was not verified: {selected}")
+                    _remember_result(expected_controls, "input", selected, "input")
                     player = await _start_audio(alarm)
                     audio_started = True
                     last_volume = 0
+                    # A delayed playback notification is the expected consequence of
+                    # starting mpv, not a human pressing the side button.
+                    expected_controls["playback"] = {"value": 0x0D, "playing": True}
                     playback_events_ignored_until = (
                         asyncio.get_running_loop().time() + 3
                     )
@@ -330,18 +453,20 @@ async def run_alarm(alarm: SunriseAlarm, *, tick_seconds: float = 30) -> dict[st
                     result = await service.set_volume(volume)
                     if result.get("applied") is not True:
                         raise RuntimeError(f"sunrise audio step was not verified: {result}")
+                    _remember_result(expected_controls, "volume", result, "volume")
                     last_volume = volume
 
             if elapsed >= duration:
                 break
-            # Everything recorded through this point belongs to our own command
-            # transactions. A control-state event arriving during the idle interval
-            # is therefore a physical side-control interaction and means snooze.
+            # Ignore packets already observed during our own command transactions.
+            # During the idle interval, snooze only on a parsed state change away
+            # from our expected state; this speaker also emits harmless duplicates.
             event_cursor = await _latest_event_sequence(service)
             event_cursor, manual_event = await _wait_for_manual_control(
                 service,
                 event_cursor,
                 min(tick_seconds, max(0.1, duration - elapsed)),
+                expected_controls,
                 ignore_playback_until=playback_events_ignored_until,
             )
             if manual_event is not None:
@@ -492,6 +617,7 @@ def main() -> None:
     if result.get("snoozed_by_physical_control") is True:
         timers = SystemdUserTimers(_alarm_unit_dir(), arguments.state)
         timers.schedule_snooze(alarm.alarm_id, alarm.physical_snooze_minutes)
+    print(json.dumps(result, sort_keys=True), file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":

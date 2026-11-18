@@ -44,6 +44,27 @@ class FakeService:
         self.disconnected = False
         self.event_calls = 0
         self.emit_manual_control = False
+        self.manual_volume = 4
+
+    async def status(self) -> dict[str, object]:
+        return {
+            "volume": {"maximum": 16, "current": 8},
+            "input": {"group": 2, "value": 1, "name": "bluetooth"},
+            "eq_preset": {"value": 0, "name": "music"},
+            "lighting": {
+                "group": 1,
+                "selected_effect_id": 6,
+                "effects": [
+                    {
+                        "id": 6,
+                        "raw_color": [255, 106, 32],
+                        "brightness": 80,
+                        "wire_speed": 255,
+                    }
+                ],
+            },
+            "playback": {"value": 3, "playing": False},
+        }
 
     async def sync_clock(self, value: str, timezone: str) -> dict[str, object]:
         self.clock_formats.append(value)
@@ -85,6 +106,7 @@ class FakeService:
                         "session": 1,
                         "opcode": alarm_runner.c.QUERY_VOLUME,
                         "payload_hex": "1004",
+                        "parsed": {"maximum": 16, "current": self.manual_volume},
                     }
                 )
         return {
@@ -167,6 +189,60 @@ async def test_side_control_event_snoozes_and_restores_dark_state(
     assert service.lights[-1]["brightness"] == 0
     assert service.displays[-1]["power"] is False
     assert result["bluetooth_disconnected"] is False
+
+
+async def test_duplicate_control_state_does_not_snooze(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = FakeService()
+    service.emit_manual_control = True
+    service.manual_volume = 8
+    monkeypatch.setattr(alarm_runner, "create_service", lambda: service)
+
+    result = await alarm_runner.run_alarm(alarm(), tick_seconds=0.01)
+
+    assert result["completed"] is True
+    assert "snoozed_by_physical_control" not in result
+
+
+def test_display_patch_ack_is_not_manual_control() -> None:
+    event = {
+        "opcode": alarm_runner.c.SET_LIGHT,
+        "payload_hex": "0100d00f000035",
+        "parse_error": "lighting brightness exceeds 100",
+    }
+    assert alarm_runner._manual_control_changed(event, {}) is False
+
+
+def test_changed_light_event_is_manual_control() -> None:
+    expected = alarm_runner._control_expectations(
+        {
+            "lighting": {
+                "group": 1,
+                "selected_effect_id": 6,
+                "effects": [
+                    {
+                        "id": 6,
+                        "raw_color": [255, 106, 32],
+                        "brightness": 20,
+                        "wire_speed": 255,
+                    }
+                ],
+            }
+        }
+    )
+    event = {
+        "opcode": alarm_runner.c.SET_LIGHT,
+        "payload_hex": "0106ff6a200aff",
+        "parsed": {
+            "group": 1,
+            "effect_id": 6,
+            "raw_color": [255, 106, 32],
+            "brightness": 10,
+            "wire_speed": 255,
+        },
+    }
+    assert alarm_runner._manual_control_changed(event, expected) is True
 
 
 class FakePlayer:
