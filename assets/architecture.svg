@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 744" role="img" aria-labelledby="title desc">
+  <title id="title">How QD35 MCP connects</title>
+  <desc id="desc">MCP tools send speaker commands through the speaker service and schedule alarms through systemd. The alarm runner also uses the speaker service for BLE controls and sends sound through mpv and PipeWire over Classic Bluetooth.</desc>
+  <defs>
+    <linearGradient id="background" x2="1" y2="1">
+      <stop stop-color="#111722"/>
+      <stop offset="1" stop-color="#221b2b"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0L8 4 0 8Z" fill="#af9fb5"/>
+    </marker>
+    <marker id="ble" markerWidth="11" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0L11 6 0 12Z" fill="#89d5d7"/>
+    </marker>
+    <marker id="classic" markerWidth="11" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0L11 6 0 12Z" fill="#ffb48a"/>
+    </marker>
+  </defs>
+  <rect x="1" y="1" width="838" height="742" rx="29" fill="url(#background)" stroke="#483c51" stroke-width="2"/>
+  <g font-family="system-ui, -apple-system, sans-serif" text-anchor="middle">
+    <text x="420" y="66" fill="#fff2eb" font-size="44" font-weight="750">How QD35 MCP connects</text>
+
+    <g fill="none" stroke="#af9fb5" stroke-width="3" stroke-linejoin="round" marker-end="url(#arrow)">
+      <path d="M420 219v34H214v94"/>
+      <path d="M420 253h206v22"/>
+      <path d="M626 333v14"/>
+      <path d="M463 385H376"/>
+      <path d="M626 423v55"/>
+    </g>
+    <path d="M214 423V627" fill="none" stroke="#89d5d7" stroke-width="3" marker-end="url(#ble)"/>
+    <path d="M626 542V627" fill="none" stroke="#ffb48a" stroke-width="3" marker-end="url(#classic)"/>
+
+    <rect x="245" y="114" width="350" height="105" rx="18" fill="#282335" stroke="#9b819e" stroke-width="2"/>
+    <text x="420" y="154" fill="#fff2eb" font-size="31" font-weight="700">MCP client</text>
+    <text x="420" y="191" fill="#d8cadd" font-size="24">QD35 MCP tools via stdio</text>
+
+    <rect x="464" y="276" width="324" height="57" rx="16" fill="#302438" stroke="#79607c" stroke-width="2"/>
+    <text x="626" y="313" fill="#fff2eb" font-size="27" font-weight="650">systemd user timers</text>
+
+    <rect x="52" y="348" width="324" height="75" rx="17" fill="#1d333f" stroke="#618e9a" stroke-width="2"/>
+    <text x="214" y="380" fill="#e6f4f5" font-size="29" font-weight="700">Speaker service</text>
+    <text x="214" y="407" fill="#b9dce0" font-size="20">Locks each BLE transaction</text>
+
+    <rect x="464" y="348" width="324" height="75" rx="17" fill="#302438" stroke="#79607c" stroke-width="2"/>
+    <text x="626" y="380" fill="#fff2eb" font-size="29" font-weight="700">Alarm runner</text>
+    <text x="626" y="407" fill="#e0c7da" font-size="20">Owns an expiring audio lease</text>
+
+    <rect x="464" y="478" width="324" height="64" rx="17" fill="#38283a" stroke="#b48285" stroke-width="2"/>
+    <text x="626" y="520" fill="#fff2eb" font-size="29" font-weight="700">mpv / PipeWire</text>
+
+    <rect x="113" y="560" width="202" height="42" rx="16" fill="#1d333f"/>
+    <text x="214" y="588" fill="#a4eaeb" font-size="23" font-weight="700">BLE control</text>
+    <rect x="457" y="560" width="338" height="42" rx="16" fill="#392b3a"/>
+    <text x="626" y="588" fill="#ffd2b6" font-size="23" font-weight="700">Classic Bluetooth audio</text>
+
+    <rect x="52" y="628" width="736" height="76" rx="18" fill="#302438" stroke="#9b819e" stroke-width="2"/>
+    <text x="420" y="678" fill="#fff2eb" font-size="36" font-weight="750">Edifier QD35</text>
+  </g>
+</svg>

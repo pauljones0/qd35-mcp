@@ -4,19 +4,9 @@ The package has two entry points into the speaker service. The MCP adapts agent 
 to semantic operations. The standalone alarm runner uses the same service from systemd
 without starting or importing an MCP server.
 
-```mermaid
-flowchart LR
-    agent["MCP client"] -->|stdio| tools["QD35 MCP tools"]
-    tools --> service["Speaker service"]
-    tools -->|schedule| systemd["systemd user timers"]
-    systemd --> runner["Alarm runner"]
-    runner --> service
-    runner --> audio["mpv / PipeWire"]
-    service -->|BLE controls| qd35["Edifier QD35"]
-    audio -->|Classic Bluetooth audio| qd35
-    service -.->|transaction lock| ownership["Per-speaker ownership"]
-    runner -.->|audio lease| ownership
-```
+![MCP tools and the alarm runner share a speaker service for BLE controls. The alarm runner also sends sound through mpv and PipeWire over Classic Bluetooth.](../assets/architecture.png)
+
+[Editable diagram source](../assets/architecture.svg)
 
 | Area | Where changes belong |
 |---|---|
