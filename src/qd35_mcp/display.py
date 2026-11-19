@@ -9,6 +9,8 @@ DISPLAY_EFFECT = 0
 DISPLAY_SET_STATE = 0xD0
 DISPLAY_WRITE_GRID = 0xD1
 DISPLAY_RESET = 0xD2
+DISPLAY_UPDATE_STATE = 0xD3
+DISPLAY_UPDATE_BRIGHTNESS = 1 << 6
 
 DISPLAY_POWER = 1 << 0
 DISPLAY_CLOCK = 1 << 1
@@ -56,6 +58,16 @@ def grid_payload(index: int, value: int) -> bytes:
     )
 
 
+def state_update_payload(flags: int, brightness: int, mask: int) -> bytes:
+    """Change selected settings on-device without relying on a host cache."""
+    if not 1 <= mask <= 0x7F:
+        raise ValueError("display update mask must select at least one field")
+    payload = bytearray(state_payload(flags, brightness))
+    payload[2] = DISPLAY_UPDATE_STATE
+    payload[5] = mask
+    return bytes(payload)
+
+
 def reset_payload() -> bytes:
     return bytes(
         (
@@ -74,22 +86,16 @@ def describe_flags(flags: int, brightness: int) -> dict[str, object]:
     power = bool(flags & DISPLAY_POWER)
     clock = bool(flags & DISPLAY_CLOCK)
     logo_grid = bool(flags & DISPLAY_LOGO)
-    if not power:
-        logo_extinction = "verified"
-    elif clock:
-        logo_extinction = "not_achievable_with_clock_on"
-    else:
-        logo_extinction = "unverified"
     return {
         "power": power,
         "clock": clock,
+        "line": logo_grid,
         "logo": logo_grid,
         "logo_grid_enabled": logo_grid,
-        "visible_logo_extinction": logo_extinction,
+        "visible_logo_extinction": "unverified",
         "logo_optical_coupling": (
-            "The EDIFIER wordmark remains visibly illuminated whenever the clock digits "
-            "are lit, even with every non-digit driver bit zero. Whole-display off is the "
-            "only verified full-extinction state."
+            "The logo field masks the clock-area line. The physical wordmark stayed lit "
+            "with all eight exposed segment bytes zeroed and went dark with display power off."
         ),
         "symbols": bool(flags & DISPLAY_SYMBOLS),
         "follow_lighting_dial": bool(flags & DISPLAY_FOLLOW_DIAL),

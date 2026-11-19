@@ -62,6 +62,7 @@ async def test_real_stdio_server_contract(tmp_path) -> None:
             assert "qd35_apply_custom_light" in names
             assert "qd35_apply_diagnostic_light" in names
             assert "qd35_apply_authored_light" in names
+            assert "qd35_apply_reactive_light" in names
             assert "qd35_apply_animation_preset" in names
             assert "qd35_create_sunrise_alarm" in names
             assert "qd35_list_alarms" in names
@@ -111,6 +112,9 @@ async def test_real_stdio_server_contract(tmp_path) -> None:
             assert by_name["qd35_install_display_firmware"].input_schema["properties"][
                 "confirmation"
             ]["const"] == "INSTALL DISPLAY PATCH"
+            display_properties = by_name["qd35_set_display"].input_schema["properties"]
+            assert "line" in display_properties
+            assert "Legacy alias" in display_properties["logo"]["description"]
 
             status = await session.call_tool("qd35_get_status")
             assert status.is_error is False
@@ -123,6 +127,12 @@ async def test_real_stdio_server_contract(tmp_path) -> None:
 
             invalid = await session.call_tool("qd35_set_input", {"source": "optical"})
             assert invalid.is_error is True
+
+            line = await session.call_tool("qd35_set_display", {"line": False})
+            assert line.is_error is False
+            assert line.structured_content["state"]["line"] is False
+            conflicting = await session.call_tool("qd35_set_display", {"line": True, "logo": False})
+            assert conflicting.is_error is True
 
             successful_calls = [
                 ("qd35_discover", {}),
@@ -160,6 +170,10 @@ async def test_real_stdio_server_contract(tmp_path) -> None:
                 (
                     "qd35_apply_animation_preset",
                     {"preset": "pac_man", "brightness": 8},
+                ),
+                (
+                    "qd35_apply_reactive_light",
+                    {"name": "Reactive test", "bands": [[["#123456"] * 37] * 10] * 10},
                 ),
                 ("qd35_media_control", {"action": "pause"}),
                 ("qd35_sync_clock", {"clock_format": "24h"}),

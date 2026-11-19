@@ -9,6 +9,15 @@
   lease. Expired owners stop reconnecting, and an old run cannot disconnect a newer one.
 - Keep the existing 39 MCP tool schemas, organize the adapters by function, and add an offline
   `qd35://guide` resource. Separate the alarm runner from the MCP adapter.
+- Apply the front-display brightness and power settings across redraw and wake paths,
+  clear private display state on MCU reset, and merge partial display updates on the speaker.
+- Require the dangerous-write gate to enable raw display mode. Check ATT write capacity
+  and keep the verified connection before opening OTA, and bound repeated block requests.
+- Preserve clock separators when the logo and status symbols are hidden.
+- Add a Spectrum Meter preset and custom sound-reactive animation authoring.
+- Protect the retained stock file during patch builds, listen for final-block OTA retries and
+  errors, and stop in-flight Bluetooth commands when their connection drops.
+- Expose the clock-area line as `line` in the MCP display tool and keep `logo` as an alias.
 
 ## 0.1.0 - 2026-11-17
 
@@ -62,10 +71,9 @@
 - Bedside radio defaults to hardware volume 4/16 with 50% player gain and is capped at 8/16.
 - Added persistent systemd-backed snooze with immediate darkening and a short two-minute
   light/audio fade after the requested 1–60 minute delay.
-- Corrected the patch's clock-off mask and forced a true digits-only framebuffer when logo and
-  symbols are disabled. A live raw-frame test proved the physical EDIFIER wordmark still catches
-  light from clock digits, so MCP results disclose that only whole-display off provides verified
-  logo extinction.
+- Corrected the patch's clock-off mask and isolated the digit bits when logo and
+  symbols are disabled. The wordmark remained visible during a digits-only raw test.
+  Whole-display off was visually confirmed.
 - Sunrise RGB and patched-display brightness now use a gamma-2.2 perceptual curve while radio
   volume retains its separate linear device-step fade.
 - Fixed alarm radio routing by selecting the exact QD35 native PipeWire device instead of a

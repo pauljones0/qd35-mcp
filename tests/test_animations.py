@@ -10,6 +10,7 @@ from qd35_mcp.animations import (
     build_creative_animation,
     build_diagnostic_animation,
     compile_authored_animation,
+    compile_reactive_animation,
     encode_frame,
     list_diagnostic_animations,
     validate_animation,
@@ -143,6 +144,37 @@ def test_encode_and_validation_fail_closed() -> None:
         validate_animation(b"x")
     with pytest.raises(ProtocolError, match="live QD35"):
         validate_animation(bytes(FRAME_SIZE * 103))
+
+
+def test_reactive_animation_preserves_band_and_level_order() -> None:
+    bands = [
+        [[f"#{band:02x}{level:02x}00"] * LIGHT_COUNT for level in range(10)]
+        for band in range(10)
+    ]
+    animation = compile_reactive_animation("Band test", bands)
+    assert animation.light_type == 2
+    assert animation.asset_id == 26
+    assert animation.frame_count == 100
+    assert animation.nominal_duration_ms is None
+    assert len(animation.data) == 15_000
+    assert animation.data[37 * FRAME_SIZE : 37 * FRAME_SIZE + 6] == b"\x00\x64\x03\x07\x00\x00"
+    with pytest.raises(ValueError, match="exactly 10 bands"):
+        compile_reactive_animation("Bad", bands[:-1])
+    with pytest.raises(ValueError, match="exactly 10 levels"):
+        compile_reactive_animation("Bad", [bands[0][:-1], *bands[1:]])
+
+
+def test_spectrum_meter_uses_disjoint_light_groups() -> None:
+    animation = build_creative_animation("spectrum_meter")
+    assert animation.light_type == 2
+    lights = []
+    for band in range(10):
+        offset = (band * 10 + 9) * FRAME_SIZE + 2
+        lights.extend(
+            index for index in range(LIGHT_COUNT)
+            if any(animation.data[offset + index * 4 : offset + index * 4 + 3])
+        )
+    assert sorted(lights) == list(range(LIGHT_COUNT))
 
 
 def test_catalog_describes_recovered_format() -> None:

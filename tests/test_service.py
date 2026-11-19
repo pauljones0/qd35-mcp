@@ -79,6 +79,7 @@ async def test_status_never_reconnects_mid_snapshot(config: Config) -> None:
 
 async def test_lighting_events_use_opcode_specific_layouts(config: Config) -> None:
     transport = FakeTransport()
+    await transport.connect()
     transport._emit(c.SET_LIGHT, bytes.fromhex("010604050632ff"))
     full_state = await transport.request(c.QUERY_LIGHT)
     transport._emit(c.RESET_LIGHT, full_state)

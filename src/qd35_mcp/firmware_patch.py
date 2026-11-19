@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import ssl
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from urllib.parse import urlparse
 
 STOCK_SIZE = 40_471
 STOCK_SHA256 = "91640d9839e7e0542c5618a0781bc8173915b81a8f2a69173103618993c849b9"
-PATCHED_SHA256 = "83ef705bc545db3b6054a48add9e310ace886fbb76312abe7204229c35891b5b"
+PATCHED_SHA256 = "b2354c561dd02e73e8d8f25599b956d69e58742421f8edc13101a3f7f0786c8a"
 IMAGE_BASE = 0x08002000
 PATCH_ADDRESS = 0x0800BE20
 PATCH_LIMIT = 0x0800C000
@@ -20,10 +22,20 @@ STOCK_URL = (
 )
 
 HOOKS = (
+    # Shorten the downward-growing stack by 24 bytes for patch state.
+    (0x08002000, bytes.fromhex("30270020"), bytes.fromhex("18270020")),
     # Effect zero in +LED+SET -> private_command.
     (0x080032E8, bytes.fromhex("c0f00f81"), bytes.fromhex("c8f09a85")),
     # Common CMS1640 buffer writer -> display_write.
-    (0x08006874, bytes.fromhex("80b50822"), bytes.fromhex("05f02cbb")),
+    (0x08006874, bytes.fromhex("80b50822"), bytes.fromhex("05f038bb")),
+    # Alternate stock framebuffer draw uses the same masks and power policy.
+    (0x08006E2C, bytes.fromhex("02f07cf8"), bytes.fromhex("05f05df8")),
+    # The RAM write no longer implicitly enables maximum brightness.
+    (0x08008F7A, bytes.fromhex("fff77cff"), bytes.fromhex("00f005b8")),
+    # Stock wake/reinitialization display control uses the same policy.
+    (0x08008FCA, bytes.fromhex("10b50400"), bytes.fromhex("02f0d2bf")),
+    # Reset clears the private state even when SRAM is retained.
+    (0x0800B2F4, bytes.fromhex("01488047"), bytes.fromhex("00f059be")),
 )
 
 # Exact output of firmware/qd35_display_patch.S assembled with:
@@ -31,19 +43,22 @@ HOOKS = (
 # llvm-objcopy -O binary --only-section=.text.patch ...
 PATCH_CODE = bytes.fromhex(
     """
-    f0b500f03ef80546607ea17e584b9847352832d1607ca17c554b98470646d02e
-    08d0d12e16d0d22e27d10020287000f028f81ce0e07c217d4d4b984700f03f00
-    0646607da17d4a4b9847072815d86e70a8700ce0e07c217d454b984707280cd8
-    0646607da17d424b98472e44307100f01ff84048012180f87710bde8f040dff8
-    f8f03e480178d52911d0d52101700f21417007218170ff21c170394900228b5c
-    00eb020c8cf804300132082af7d37047f0b5fff7e6ff0446657815f0200f14bf
-    261d2f4e04f10c070022b05cb8540132082afad315f0020f0bd1387800f0f000
-    38700122b85c00f0c000b8540132082af8d315f0040f0bd1387800f09f003870
-    0122b85c00f0bf00b8540132082af8d315f0080f0cd10022b85c00f07f00b854
-    0132082af8d315f0040f01d10020387015f0010f02d1134b9847f0bdc0203946
-    0822114b984715f0100f09d00948807c58b10821484301386421b0fbf1f000e0
-    a0788830094b9847f0bd064b9847f0bd4b2a0008cc130020c539000830170020
-    b8160020ef8f0008298f0008cb8f0008
+    f8b500f055f80546192000f04cf8352845d1112000f047f80746d02f0c
+    d0d32f0ad0d12f2ad0d42f35d0d22f37d10020287000f03df82ce01320
+    00f034f800f03f000646152000f02ef8072827d8d32f02d06e70a8701c
+    e00746172000f023f87f281cd810f0400f18bfaf7000f03f0069788143
+    0640314369700ae0132000f012f807280bd80646152000f00cf82e4430
+    7100f019f84148012180f87710bde8f840dff8fcf0421ca15c205c3d4b
+    18473d480178d52906d03c4901603c4991e80c00c0e90123704739498c
+    463348017911b190f86d1001b17047f8b56646fff7e7ff0446657815f0
+    200f18bf261d04f10c070022b05cb8540132082afad33878ff2115f002
+    0f04bf00f0f00001f0c00115f0040f04bf00f09f0001f0bf0115f0080f
+    04bf00f06f0001f07f0138700122b85c0840b8540132082af9d315f001
+    0f04d0c020394608221a4b984700f001f8f8bd10b5fff7acff04466278
+    12f0010f0fd012f0100f09d00c48807c48b10821484301386421b0fbf1
+    f000e0a078883000e0802004460c4b1847074880f3088800210170094b
+    9847094b1847cc130020c53900084b2a000818270020d50f0700b81600
+    20298f0008cf8f000879ab0008f9b20008
     """
 )
 
@@ -80,9 +95,21 @@ def patch_image(stock: bytes) -> bytes:
 
 
 def patch_file(source: Path, destination: Path) -> dict[str, object]:
+    output = destination.resolve()
+    if source.resolve() == output or (output.exists() and source.samefile(output)):
+        raise ValueError("stock firmware and patched output must be different files")
     patched = patch_image(source.read_bytes())
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(patched)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = NamedTemporaryFile(dir=output.parent, delete=False)
+    pending = Path(temporary.name)
+    try:
+        with temporary:
+            temporary.write(patched)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(pending, output)
+    finally:
+        pending.unlink(missing_ok=True)
     return {
         "source": str(source),
         "destination": str(destination),

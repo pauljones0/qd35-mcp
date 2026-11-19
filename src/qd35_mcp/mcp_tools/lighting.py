@@ -8,6 +8,8 @@ from ..service import QD35Service
 from .common import call
 
 RGBColor = Annotated[str, Field(pattern=r"^#[0-9A-Fa-f]{6}$")]
+ReactiveFrame = Annotated[list[RGBColor], Field(min_length=37, max_length=37)]
+ReactiveBand = Annotated[list[ReactiveFrame], Field(min_length=10, max_length=10)]
 LightingEffect = Literal[
     "ambient", "magic_tides", "shooting_star", "breathing", "tempo_emo", "static", "extended"
 ]
@@ -108,8 +110,22 @@ def register_lighting_tools(server: MCPServer, service: QD35Service) -> None:
     @server.tool(
         annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
     )
+    async def qd35_apply_reactive_light(
+        name: Annotated[str, Field(min_length=1, max_length=48)],
+        bands: Annotated[list[ReactiveBand], Field(min_length=10, max_length=10)],
+        brightness: Annotated[int, Field(ge=1, le=100)] = 10,
+        activate: bool = True,
+    ) -> dict[str, object]:
+        """Upload ten audio bands, each with ten RGB frames from quietest to strongest."""
+        return await call(service.apply_reactive_light, name, bands, activate, brightness)
+
+    @server.tool(
+        annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False)
+    )
     async def qd35_apply_animation_preset(
-        preset: Literal["pac_man", "comet", "rainbow_wave", "fireflies", "embers"],
+        preset: Literal[
+            "pac_man", "comet", "rainbow_wave", "fireflies", "embers", "spectrum_meter"
+        ],
         brightness: Annotated[int, Field(ge=1, le=100)] = 15,
         activate: bool = True,
     ) -> dict[str, object]:

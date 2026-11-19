@@ -66,6 +66,7 @@ def transport(monkeypatch: pytest.MonkeyPatch) -> BleakTransport:
     MockClient.ready_event = asyncio.Event()
     monkeypatch.setattr(bleak, "BleakClient", MockClient)
     result = BleakTransport(scan_timeout=0.01)
+    monkeypatch.setattr(result, "_OTA_FINAL_REPLY_TIMEOUT", 0.01)
     device = SimpleNamespace(address="AA:BB:CC:DD:EE:01", name=None)
     candidate = DeviceCandidate(
         address=device.address,
@@ -105,6 +106,20 @@ async def test_notification_setup_failure_cleans_up_session(
     assert MockClient.instances[0].is_connected is False
 
 
+async def test_failed_notification_setup_cannot_add_late_events(
+    transport: BleakTransport, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def failed_subscribe(self, _uuid, callback):
+        self.notification_callback = callback
+        raise OSError("subscription interrupted")
+
+    monkeypatch.setattr(MockClient, "start_notify", failed_subscribe)
+    with pytest.raises(TransportError, match="subscription interrupted"):
+        await transport.connect()
+    MockClient.instances[0].notification_callback(None, reply(c.QUERY_VOLUME, b"\x10\x06"))
+    assert (await transport.events())["events"] == []
+
+
 async def test_obsolete_disconnect_callback_cannot_clear_new_client(
     transport: BleakTransport,
 ) -> None:
@@ -121,12 +136,14 @@ async def test_obsolete_disconnect_callback_cannot_clear_new_client(
 async def test_timeout_invalidates_session_before_same_opcode_retry(
     transport: BleakTransport,
 ) -> None:
+    await transport.connect()
     with pytest.raises(RequestTimeout):
         await transport.request(c.QUERY_VOLUME, timeout=0.01)
     assert transport.connected is False
     assert MockClient.instances[0].is_connected is False
 
     MockClient.auto_reply = True
+    await transport.connect()
     assert await transport.request(c.QUERY_VOLUME, timeout=0.1) == b"\x10\x06"
     assert len(MockClient.instances) == 2
 
@@ -134,6 +151,7 @@ async def test_timeout_invalidates_session_before_same_opcode_retry(
 async def test_mutating_timeout_is_unknown_even_when_connection_stays_up(
     transport: BleakTransport,
 ) -> None:
+    await transport.connect()
     with pytest.raises(OutcomeUnknown, match="write outcome unknown"):
         await transport.request(c.SET_VOLUME, b"\x08", timeout=0.01)
     assert transport.connected is False
@@ -153,8 +171,8 @@ async def test_malformed_mutating_reply_is_unknown(transport: BleakTransport) ->
 
 
 async def test_cancelled_request_invalidates_session(transport: BleakTransport) -> None:
+    await transport.connect()
     task = asyncio.create_task(transport.request(c.QUERY_VOLUME, timeout=5))
-    await MockClient.ready_event.wait()
     await asyncio.sleep(0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -166,11 +184,30 @@ async def test_cancelled_request_invalidates_session(transport: BleakTransport) 
 async def test_one_way_send_does_not_wait_for_notification(
     transport: BleakTransport,
 ) -> None:
+    await transport.connect()
     await transport.send(c.MEDIA_CONTROL, b"\x01")
 
     assert transport.connected is True
     assert MockClient.instances[0].writes[0][2] == c.MEDIA_CONTROL
     assert MockClient.instances[0].writes[0][5] == 1
+
+
+async def test_operations_do_not_open_a_new_session_after_link_loss(
+    transport: BleakTransport,
+) -> None:
+    await transport.connect()
+    client = MockClient.instances[0]
+    await client.disconnect()
+
+    with pytest.raises(TransportError, match="session ended before sending the request"):
+        await transport.request(c.SET_VOLUME, b"\x08")
+    with pytest.raises(TransportError, match="session ended before sending the command"):
+        await transport.send(c.MEDIA_CONTROL, b"\x01")
+    with pytest.raises(TransportError, match="session ended before negotiating write capacity"):
+        await transport.prepare_large_write(163)
+
+    assert len(MockClient.instances) == 1
+    assert client.writes == []
 
 
 async def test_large_frame_uses_negotiated_mtu_despite_stale_characteristic_limit(
@@ -233,9 +270,37 @@ async def test_ota_fragmentation_matches_current_edifier_app(
 
     monkeypatch.setattr(bleak_module.asyncio, "sleep", record_sleep)
     packet = bytes(index % 256 for index in range(520))
-    await transport._write_fragmented_packet_locked(packet)
+    await transport._write_fragmented_packet_locked(packet, 500)
     assert client.writes == [packet[:500], packet[500:]]
     assert sleeps == [0.3]
+
+
+async def test_ota_insufficient_att_capacity_does_not_start_flash(
+    transport: BleakTransport,
+) -> None:
+    await transport.connect()
+    client = MockClient.instances[0]
+    client.services = SimpleNamespace(
+        get_characteristic=lambda _uuid: SimpleNamespace(max_write_without_response_size=100)
+    )
+
+    with pytest.raises(TransportError, match="500-byte write required"):
+        await transport.ota_update(bytes(range(40)), (1, 3, 0))
+
+    assert client.writes == []
+    assert transport.connected
+
+
+async def test_ota_does_not_reconnect_after_target_session_ends(transport: BleakTransport) -> None:
+    await transport.connect()
+    client = MockClient.instances[0]
+    await transport.disconnect()
+
+    with pytest.raises(TransportError, match="session ended before OTA"):
+        await transport.ota_update(bytes(range(40)), (1, 3, 0))
+
+    assert len(MockClient.instances) == 1
+    assert client.writes == []
 
 
 async def test_ota_state_machine_follows_device_requested_chunk_size(
@@ -262,6 +327,9 @@ async def test_ota_state_machine_follows_device_requested_chunk_size(
     result = await transport.ota_update(image, (1, 3, 0))
     assert result["bytes_sent"] == 40
     assert result["chunks_sent"] == 3
+    assert result["block_retries_sent"] == 0
+    assert result["completion_readback"] is False
+    assert result["connection_dropped"] is False
     assert writes[0][2] == c.OTA_READY
     assert writes[0][5:14] == len(image).to_bytes(4, "big") + b"\x01\x03\x00\x02\x00"
     payloads = [packet[5:-1] for packet in writes[1:]]
@@ -269,9 +337,84 @@ async def test_ota_state_machine_follows_device_requested_chunk_size(
     assert b"".join(payload[2:] for payload in payloads) == image
 
 
+@pytest.mark.parametrize("terminal_reply", [b"\x05", b"\x00\x00\x10"])
+async def test_ota_reports_terminal_rejection_or_unexpected_data_request(
+    transport: BleakTransport, terminal_reply: bytes,
+) -> None:
+    await transport.connect()
+    client = MockClient.instances[0]
+    client.services = SimpleNamespace(
+        get_characteristic=lambda _uuid: SimpleNamespace(max_write_without_response_size=500)
+    )
+
+    async def ota_write(_uuid: str, packet: bytes, response: bool = False) -> None:
+        payload = b"\x00\x00\x10" if packet[2] == c.OTA_READY else terminal_reply
+        client.notification_callback(None, reply(c.OTA_TRANSFER, payload))
+
+    client.write_gatt_char = ota_write
+    with pytest.raises(OutcomeUnknown, match="after the final block"):
+        await transport.ota_update(b"image", (1, 3, 0))
+    assert not transport.connected
+
+
+async def test_ota_can_resend_a_requested_final_block_before_link_drops(
+    transport: BleakTransport,
+) -> None:
+    await transport.connect()
+    client = MockClient.instances[0]
+    client.services = SimpleNamespace(
+        get_characteristic=lambda _uuid: SimpleNamespace(max_write_without_response_size=500)
+    )
+    final_writes = []
+
+    async def ota_write(_uuid: str, packet: bytes, response: bool = False) -> None:
+        if packet[2] == c.OTA_READY:
+            client.notification_callback(None, reply(c.OTA_TRANSFER, b"\x00\x00\x10"))
+            return
+        final_writes.append(packet)
+        if len(final_writes) == 1:
+            client.notification_callback(None, reply(c.OTA_TRANSFER, b"\x02\x00\x10"))
+        else:
+            await client.disconnect()
+
+    client.write_gatt_char = ota_write
+    result = await transport.ota_update(b"image", (1, 3, 0))
+    assert len(final_writes) == 2 and final_writes[0] == final_writes[1]
+    assert result["bytes_sent"] == 5
+    assert result["chunks_sent"] == 1
+    assert result["block_retries_sent"] == 1
+    assert result["connection_dropped"] is True
+    assert result["completion_readback"] is False
+
+
+async def test_ota_bounds_repeated_requests_for_the_same_block(transport: BleakTransport) -> None:
+    await transport.connect()
+    client = MockClient.instances[0]
+    client.services = SimpleNamespace(
+        get_characteristic=lambda _uuid: SimpleNamespace(max_write_without_response_size=500)
+    )
+    blocks = []
+
+    async def ota_write(_uuid: str, packet: bytes, response: bool = False) -> None:
+        if packet[2] == c.OTA_READY:
+            progress = b"\x00\x00\x10"
+        else:
+            blocks.append(packet)
+            progress = b"\x02\x00\x10"
+        client.notification_callback(None, reply(c.OTA_TRANSFER, progress))
+
+    client.write_gatt_char = ota_write
+    with pytest.raises(OutcomeUnknown, match="exceeded five retries"):
+        await transport.ota_update(bytes(range(40)), (1, 3, 0))
+    assert len(blocks) == 6
+    assert len(set(blocks)) == 1
+    assert not transport.connected
+
+
 async def test_custom_chunk_timeout_keeps_session_for_same_chunk_retry(
     transport: BleakTransport,
 ) -> None:
+    await transport.connect()
     with pytest.raises(RequestTimeout, match="same chunk may retry"):
         await transport.request(c.PROCESS_CUSTOM_LIGHT_TRANSFER, b"chunk", timeout=0.01)
     assert transport.connected is True

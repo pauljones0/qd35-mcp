@@ -3,6 +3,8 @@
 This document records independently derived facts from Edifier's official QD35
 firmware and the Edifier Connect application. Addresses below use image base
 `0x08002000`. They describe QD35 firmware 1.3.0 only unless stated otherwise.
+The [firmware postmortem](firmware-postmortem.md) covers the patch history,
+board capability boundaries, and candidates for future firmware work.
 
 ## Provenance and update status
 
@@ -103,13 +105,11 @@ the lower light guide from left to right. Addresses 20 through 36 traverse the r
 around the mid-bass driver. The published coordinates are visible light-guide
 centroids, not hidden package coordinates.
 
-A teardown of the domestic NEW-X reports 20 RGB packages on its lighting PCB. Its
-photograph does show 20 packages in a row, so this is not safely interchangeable
-with the live international-QD35 count despite the products sharing application
-code and animation files. The difference may be a regional or board revision. The
-strong statement supported for the tested QD35 is **37 independently controlled
-RGB nodes and 37 visible responses**; locating the hidden packages themselves would
-require opening that exact unit.
+The [NEW-X teardown](https://www.52audio.com/archives/167663.html) counts 20 RGB
+packages on the lower display PCB. That count covers one board. The international
+QD35 sends 37 RGB words, and 37 corresponding positions lit in the synchronized
+recording, including 17 around the mid-bass driver. The recording establishes
+visible positions, while exact package locations require panel-level evidence.
 
 ### Type 1
 
@@ -127,12 +127,22 @@ positive duration and does not expose this sentinel.
 
 ### Type 2
 
-`0x08006074` maps ten live audio levels to groups of uploaded records, merges the
-selected records into a working frame, and renders the same 37 RGB triples. The first
-two bytes are not used as a duration by this path. The reserved byte is not sent to
-the pixel writer. Because the merge code tests entire 16-bit halves for zero before
-copying them, a nonzero reserved byte can still alter which half-record wins during
-the merge even though it is not rendered. It must remain zero.
+`0x08006074` uses 100 records in band-major order. It reads one sample for each
+of ten audio-analysis channels and selects one of that band's ten frames.
+The frame index is `10 * band + level`. The nine boundaries before the highest
+level are 20, 55, 145, 320, 500, 800, 1227, 1699, and 2737 in the firmware's
+internal units. Each new analysis sample moves the current band level at most
+one step toward the target. The relationship between channels and frequencies
+depends on the audio processor and has not been measured on the physical unit.
+
+The renderer merges the ten selected frames and writes 37 RGB triples. Earlier
+bands win when both frames have a nonzero value in the same 16-bit word. R/G
+and B/reserved are merged separately. Use disjoint LEDs for predictable band
+colors. The two-byte header does not set the frame duration. Authored assets
+use the official header value 100 and zero all reserved bytes.
+
+The new Spectrum Meter passed all 100 band and level cases in the original
+firmware renderer under CPU emulation, with the full 37-pixel output checked.
 
 ### Type 3
 
@@ -161,8 +171,12 @@ down the speaker or its Bluetooth connection.
 
 ### Clock, status icons, and logo
 
-The clock/status glass and the EDIFIER wordmark are driven by a separate CMS1640-
-compatible 8-by-8 segment buffer at `0x200016B8`. The bit-banged driver is at
+The clock/status glass and the EDIFIER wordmark use a separate CMS1640-compatible
+driver, with an eight-byte working buffer at `0x200016B8`. The
+[CMS1640 datasheet](https://www.mcu.com.cn/en/support-download/171.html) maps each
+RAM address to a GRID pin and each bit to a SEG pin. The firmware clears the entire
+16-byte driver RAM (`C0`–`CF`) at display initialization, and the two ordinary
+frame paths update `C0`–`C7`. The bit-banged driver is at
 `0x08008E76` through `0x0800900C`:
 
 | Function | Address | Behavior |
@@ -173,22 +187,28 @@ compatible 8-by-8 segment buffer at `0x200016B8`. The bit-banged driver is at
 | display off | `0x08008FEE` | sends `0x80` |
 
 The firmware always enables this driver at maximum CMS1640 brightness (`0x8F`). It
-never uses the intermediate brightness commands `0x88` through `0x8E`.
+never uses the intermediate brightness commands `0x88` through `0x8E`. The
+datasheet defines a single, nonlinear PWM setting for the whole display. Its
+lowest enabled setting is 1/16 of a scan pulse and its highest is 14/16.
 
-Clock digits occupy six grid bits in the eight-byte RAM. `0x0800689A` writes one
-numeric digit, `0x08006ACE` renders the live time, and `0x08006B28` can clear the six
-digit grids while preserving the remaining grids. The `+TIM+SET` handler at
+The six numeric digit planes are bits 0–5 of bytes 1–7. The live time renderer at
+`0x08006C1E` also sets byte 0 bits 0–3 for the clock separators. `0x0800689A`
+writes one digit. The `+TIM+SET` handler at
 `0x08003258` only changes hour, minute, second, and 12/24-hour state, commits those
 values to the RTC, and redraws the display. There is no clock-enable, clock-
 brightness, or clock-off field in that command.
 
-The static wordmark is independently represented inside the segment RAM. During
-display initialization, `0x08006A2E(1)` sets grid bit 6 across all eight segment
-bytes. Its zero branch leaves those bits unchanged rather than clearing them. It is
-called only once, with argument one, from `0x08006D50`; no parsed Bluetooth/MCU
-command calls it again. The patch can mask that dedicated grid inside its copied
-framebuffer, but the stock firmware deliberately fixes it on. This electrical mapping
-does not establish optical independence from neighboring clock segments.
+The stock horizontal-line initialization routine at `0x08006A2E(1)` sets byte 0 to
+`60` and bytes 1–7 to `40` when starting from zero. Its zero branch redraws
+the buffer unchanged. A separate startup routine at `0x08006A80(1)` sets bit 7
+in bytes 6 and 7. The live test identifies that group as the small striped
+indicator. The FCC photos show the clock and wordmark in separate packages on a
+common PCB. The connection between the wordmark and driver is still unknown.
+
+The current patch masks the horizontal-line bits and the status plane separately.
+The clock mask also clears its separator bits when digits are off. The previous
+revision zeroed all of byte 0 when both logo and symbols were off. The current
+revision preserves the separator bits whenever the clock is enabled.
 
 The only production path that blanks both the clock and wordmark is speaker standby:
 `0x08008382` clears the RGB output, serializes the black frame, and sends CMS1640
@@ -210,12 +230,17 @@ Consequently, unmodified stock firmware 1.3.0 supports these combinations:
 The project's optional patch implements those formerly hypothetical driver controls. It
 reuses otherwise-invalid lighting effect zero as a private, magic-guarded command
 path, hooks the common display writer, and keeps its state in volatile SRAM. It can
-mask digit, logo-grid, and other symbol bits independently; issue display off; select
+mask digit, horizontal-line, and other symbol bits independently; issue display off; select
 brightness commands `0x88..0x8F`; follow the ordinary 0–100 lighting value; and use
-all eight raw grid bytes. A live digits-only raw frame still illuminated the printed
-EDIFIER wordmark, proving optical coupling from the clock; full visible extinction
-requires whole-display off. The normal power-on default is unchanged. See
-`display-firmware.md` for the memory map, hashes, rollback process, and live tests.
+all eight working display bytes. Replaying the earlier bedside raw frame through
+the exact previous and current images produced the same digits-only RAM write.
+The earlier image then sent a full-brightness command before applying the
+requested minimum. The recorded residual has several possible sources, including
+light leaking from another part of the panel, electrical ghosting, or ambient
+light reflecting from the printed wordmark. Its cause and the ability to make
+the wordmark visually dark with the current patch remain open. Whole-display off
+was confirmed in the earlier bedside test. See [display firmware](display-firmware.md)
+for a controlled comparison on the speaker.
 
 ## Lighting-MCU command inventory
 
@@ -240,6 +265,24 @@ found no corresponding QD35 command builder. This rules out a merely hidden app 
 control for the stock protocol. The optional open patch supplies the missing custom
 path without claiming that it was present in Edifier's protocol.
 
+### Internal functions with further room to explore
+
+| Function | Evidence in QD35 1.3.0 | Coverage |
+|---|---|---|
+| Audio-reactive custom patterns | `+FFT+SET` at `0x08003568` consumes ten two-byte audio values, and the type-2 renderer selects and merges frames. | The official Multicolored asset, Spectrum Meter preset, and reactive authoring tool use type 2. The authored renderer output was checked in emulation. |
+| Prompt-tone coordination | `+TON+STA` at `0x08002E98` forces amplifier register 3 to `03` in Bluetooth mode and selects a fixed prompt gain table. Emulation produced the same amplifier writes at media volumes 0, 10, and 16. `+TON+END` clears the prompt state after its gain call. | Setting media volume to zero is insufficient to guarantee a silent prompt. A prompt-specific control on this QD35's Bluetooth/audio controller remains unverified. |
+| USB/audio and AUX detection | `+DET+UIN`/`+DET+OUT` and `+AUX+UIN`/`+AUX+OUT` update separate detection values. The AUX removal branch calls the mute/audio-control helper when AUX is selected. | MCP can select each source. Physical hot-plug behavior and public notification availability need a dedicated test. |
+| Recovery and factory paths | An internal `+BUG+ESD` branch clears control state at `0x0800352E`. OTA has its own display path. | These branches do not establish user-facing diagnostic or maintenance controls. |
+| Front panel | The eight-byte buffer can be written raw. The stock firmware also renders numeric overlays, separators, input and EQ indicators. | All working bytes are controllable. A camera-verified map of individual bits, including the second always-on startup group, is still missing. |
+
+The Cortex-M image covers lighting, local controls and coordination. The BES
+Bluetooth/audio controller and the GaN charging controller have separate firmware.
+The [QD35 manual](https://cdn.ventmere.com/edifier-dev/uploads/2023-03/QD35%20User%20Manual-Online-V1.0-EN_HJb_VEh0i.pdf)
+documents USB-A computer audio, AUX, Bluetooth, and charging in standby. Its
+charging limits are 35 W on USB-C alone, 18 W on USB-A alone, and 18 W per port
+when both are used. The observed BLE capabilities do not advertise charging
+telemetry, a prompt setting, or the app's generic light and shutdown timers.
+
 ## Confidence and limits
 
 The byte layout, receive-time byte order, three type branches, type-1 timer behavior,
@@ -251,5 +294,5 @@ The exact hidden package coordinates on the owner's QD35 remain unmeasured becau
 the visible acrylic guides move and diffuse each source. The firmware serializer
 and the synchronized recording establish the 37-node wire count and the lower-
 strip/ring topology without pretending that visible centroids are PCB coordinates.
-The domestic NEW-X teardown's 20-package board is retained as variant evidence, not
-used to override measurements from the international QD35.
+The domestic NEW-X teardown directly documents the lower board. The synchronized
+international-QD35 recording covers the lower guide and mid-bass ring together.

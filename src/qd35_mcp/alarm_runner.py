@@ -27,7 +27,13 @@ from .alarm_schedule import (
 from .alarm_systemd import KEEPALIVE_UNIT, SystemdUserTimers, default_unit_dir
 from .alarms import AlarmStore
 from .audio_keepalive import disconnect_classic
-from .display import DISPLAY_MAGIC, DISPLAY_RESET, DISPLAY_SET_STATE, DISPLAY_WRITE_GRID
+from .display import (
+    DISPLAY_MAGIC,
+    DISPLAY_RESET,
+    DISPLAY_SET_STATE,
+    DISPLAY_UPDATE_STATE,
+    DISPLAY_WRITE_GRID,
+)
 from .errors import QD35Error, SpeakerBusy
 from .factory import create_service
 from .ownership import AudioLease, SpeakerOwnership
@@ -299,7 +305,9 @@ def _is_display_patch_event(event: dict[str, object]) -> bool:
     return (
         len(payload) == 7
         and payload[1] == 0
-        and payload[2] in {DISPLAY_SET_STATE, DISPLAY_WRITE_GRID, DISPLAY_RESET}
+        and payload[2] in {
+            DISPLAY_SET_STATE, DISPLAY_WRITE_GRID, DISPLAY_RESET, DISPLAY_UPDATE_STATE
+        }
         and payload[6] == DISPLAY_MAGIC
     )
 

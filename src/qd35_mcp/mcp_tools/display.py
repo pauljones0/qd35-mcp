@@ -26,18 +26,23 @@ def register_display_tools(server: MCPServer, service: QD35Service) -> None:
     async def qd35_set_display(
         power: bool | None = None,
         clock: bool | None = None,
-        logo: bool | None = None,
+        logo: Annotated[
+            bool | None, Field(description="Legacy alias for line. Controls the clock-area line.")
+        ] = None,
         symbols: bool | None = None,
         brightness: Annotated[int | None, Field(ge=0, le=7)] = None,
         follow_lighting_dial: bool | None = None,
         raw_mode: bool | None = None,
+        line: Annotated[bool | None, Field(description="Show the line under the clock.")] = None,
     ) -> dict[str, object]:
-        """Control the patched front display. Switch power off to darken both clock and logo."""
+        """Control the patched front display. The physical wordmark follows overall power."""
+        if line is not None and logo is not None and line != logo:
+            raise ToolError("line and its legacy alias logo must agree when both are supplied")
         return await call(
             service.set_display,
             power,
             clock,
-            logo,
+            line if line is not None else logo,
             symbols,
             brightness,
             follow_lighting_dial,
@@ -56,7 +61,7 @@ def register_display_tools(server: MCPServer, service: QD35Service) -> None:
         index: Annotated[int, Field(ge=0, le=7)],
         value: Annotated[int, Field(ge=0, le=255)],
     ) -> dict[str, object]:
-        """Expert control: write one raw CMS1640 byte; requires raw mode and dangerous writes."""
+        """Stage one raw CMS1640 byte. Raw mode displays it. Requires dangerous writes."""
         return await call(service.write_display_grid_byte, index, value)
 
     @server.tool(
@@ -93,7 +98,7 @@ def register_display_tools(server: MCPServer, service: QD35Service) -> None:
     async def qd35_restore_stock_firmware(
         confirmation: Literal["RESTORE STOCK FIRMWARE"],
     ) -> dict[str, object]:
-        """Fetch and flash the exact pinned official QD35 1.3.0 image, removing the patch."""
+        """Send the exact pinned stock image. Verify restoration after the speaker restarts."""
         if confirmation != "RESTORE STOCK FIRMWARE":
             raise ToolError("confirmation must be exactly RESTORE STOCK FIRMWARE")
         return await call(service.restore_stock_firmware_from_edifier)

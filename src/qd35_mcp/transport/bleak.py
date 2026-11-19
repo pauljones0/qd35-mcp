@@ -19,6 +19,8 @@ from .base import DeviceCandidate, DeviceEvent, Transport
 
 class BleakTransport(Transport):
     _NOTIFICATION_QUEUE_LIMIT = 256
+    _OTA_REPLY_TIMEOUT = 20.0
+    _OTA_FINAL_REPLY_TIMEOUT = 3.0
 
     def __init__(self, adapter: str | None = None, scan_timeout: float = 8) -> None:
         self.adapter = adapter
@@ -135,6 +137,7 @@ class BleakTransport(Transport):
             from bleak import BleakClient
 
             client: Any = None
+            initializing = True
 
             def on_disconnect(disconnected_client: Any) -> None:
                 # An obsolete client's late callback must not clear a newer session.
@@ -142,7 +145,6 @@ class BleakTransport(Transport):
                     self._client = None
 
             def on_notification(_characteristic: Any, data: bytearray) -> None:
-                initializing = self._client is None and self._session == next_session - 1
                 current = self._client is client and self._session == next_session
                 if not (initializing or current):
                     return
@@ -186,6 +188,8 @@ class BleakTransport(Transport):
                 raise TransportError(
                     f"Bluetooth connection setup failed: {self._error_detail(exc)}"
                 ) from exc
+            finally:
+                initializing = False
 
             # Publish only a fully connected, subscribed session.
             self._device = next_device
@@ -226,7 +230,7 @@ class BleakTransport(Transport):
     async def send(self, opcode: int, payload: bytes = b"") -> None:
         async with self._request_lock:
             if not self.connected:
-                await self._connect_locked(self._candidate.address if self._candidate else None)
+                raise TransportError("Bluetooth session ended before sending the command")
             packet = encode_frame(opcode, payload, self._xor_payload)
             try:
                 await self._write_packet_locked(packet)
@@ -245,7 +249,7 @@ class BleakTransport(Transport):
     async def request(self, opcode: int, payload: bytes = b"", timeout: float = 4) -> bytes:
         async with self._request_lock:
             if not self.connected:
-                await self._connect_locked(self._candidate.address if self._candidate else None)
+                raise TransportError("Bluetooth session ended before sending the request")
             while not self._queue.empty():
                 self._queue.get_nowait()
             packet = encode_frame(opcode, payload, self._xor_payload)
@@ -338,15 +342,10 @@ class BleakTransport(Transport):
     async def _write_fragmented_packet_locked(
         self,
         packet: bytes,
-        fragment_size: int = 500,
+        fragment_size: int,
         gap_seconds: float = 0.3,
     ) -> None:
-        """Reproduce Edifier Connect's OTA-only protocol-frame fragmentation."""
-        maximum = await self._prepare_large_write_locked(fragment_size)
-        if maximum < fragment_size:
-            raise TransportError(
-                f"negotiated ATT capacity {maximum} is below OTA fragment {fragment_size}"
-            )
+        """Write the OTA fragments after the caller has verified ATT capacity."""
         for offset in range(0, len(packet), fragment_size):
             fragment = packet[offset : offset + fragment_size]
             await self._client.write_gatt_char(c.WRITE_UUID, fragment, response=False)
@@ -380,7 +379,9 @@ class BleakTransport(Transport):
             raise ValueError("OTA version must contain three bytes")
         async with self._request_lock:
             if not self.connected:
-                await self._connect_locked(self._candidate.address if self._candidate else None)
+                raise TransportError("Bluetooth session ended before OTA could start")
+            fragment_size = 500
+            await self._prepare_large_write_locked(fragment_size)
             while not self._queue.empty():
                 self._queue.get_nowait()
             # The app advertises 512 as its protocol request size while the BLE
@@ -388,13 +389,25 @@ class BleakTransport(Transport):
             ready = len(image).to_bytes(4, "big") + bytes(version) + (512).to_bytes(2, "big")
             try:
                 await self._write_packet_locked(encode_frame(c.OTA_READY, ready, self._xor_payload))
-                reply = await self._wait_for_opcode_locked(c.OTA_TRANSFER, 20)
                 offset = 0
                 chunks = 0
+                retries = 0
+                consecutive_retries = 0
                 previous: bytes | None = None
-                while offset < len(image):
+                while True:
+                    final_sent = offset == len(image)
+                    timeout = (
+                        self._OTA_FINAL_REPLY_TIMEOUT if final_sent else self._OTA_REPLY_TIMEOUT
+                    )
+                    try:
+                        reply = await self._wait_for_opcode_locked(c.OTA_TRANSFER, timeout)
+                    except RequestTimeout:
+                        if not final_sent:
+                            raise
+                        break
                     if len(reply) == 1:
-                        raise ProtocolError(f"device rejected OTA with status {reply[0]}")
+                        phase = " after the final block" if final_sent else " during transfer"
+                        raise ProtocolError(f"device returned OTA status 0x{reply[0]:02X}{phase}")
                     if len(reply) < 3:
                         raise ProtocolError("OTA transfer request is truncated")
                     rr0 = reply[0]
@@ -406,8 +419,15 @@ class BleakTransport(Transport):
                     if rr0 == 2:
                         if previous is None:
                             raise ProtocolError("device requested an OTA retry before any chunk")
+                        consecutive_retries += 1
+                        if consecutive_retries > 5:
+                            raise ProtocolError("OTA exceeded five retries for the same block")
                         payload = previous
+                        retries += 1
                     elif rr0 == 0:
+                        if final_sent:
+                            raise ProtocolError("device requested more data after the final block")
+                        consecutive_retries = 0
                         size = min(len(image) - offset, request_size)
                         final = offset + size == len(image)
                         payload = bytes((0, int(final))) + image[offset : offset + size]
@@ -417,10 +437,7 @@ class BleakTransport(Transport):
                     else:
                         raise ProtocolError(f"device returned unsupported OTA RR0 status {rr0}")
                     packet = encode_frame(c.OTA_TRANSFER, payload, self._xor_payload)
-                    await self._write_fragmented_packet_locked(packet)
-                    if offset == len(image) and rr0 == 0:
-                        break
-                    reply = await self._wait_for_opcode_locked(c.OTA_TRANSFER, 20)
+                    await self._write_fragmented_packet_locked(packet, fragment_size)
             except asyncio.CancelledError:
                 await self._invalidate_locked()
                 raise
@@ -434,12 +451,14 @@ class BleakTransport(Transport):
             return {
                 "bytes_sent": len(image),
                 "chunks_sent": chunks,
+                "block_retries_sent": retries,
                 "target_version": ".".join(map(str, version)),
                 "final_chunk_sent": True,
                 "completion_readback": False,
+                "connection_dropped": not self.connected,
                 "note": (
-                    "Edifier's protocol provides no final image hash readback; live feature "
-                    "probing is required after the lighting MCU restarts."
+                    "The final reply window ended without a further request or status. "
+                    "Verify the firmware after the lighting MCU restarts."
                 ),
             }
 
@@ -448,7 +467,7 @@ class BleakTransport(Transport):
             raise ValueError("minimum_size must be positive")
         async with self._request_lock:
             if not self.connected:
-                await self._connect_locked(self._candidate.address if self._candidate else None)
+                raise TransportError("Bluetooth session ended before negotiating write capacity")
             return await self._prepare_large_write_locked(minimum_size)
 
     async def _prepare_large_write_locked(self, minimum_size: int) -> int:

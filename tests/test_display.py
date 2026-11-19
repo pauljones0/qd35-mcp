@@ -15,6 +15,7 @@ from qd35_mcp.display import (
     describe_flags,
     grid_payload,
     state_payload,
+    state_update_payload,
 )
 from qd35_mcp.errors import DangerousWritesDisabled, ProtocolError
 from qd35_mcp.service import QD35Service
@@ -37,18 +38,39 @@ def config(*, custom: bool = True, dangerous: bool = True) -> Config:
 def test_payload_validation() -> None:
     assert state_payload(0x3F, 7) == bytes.fromhex("0100d03f070035")
     assert grid_payload(3, 0xA5) == bytes.fromhex("0100d103a50035")
+    assert state_update_payload(0, 2, 0x40) == bytes.fromhex("0100d300024035")
     with pytest.raises(ValueError):
         state_payload(0x40, 7)
     with pytest.raises(ValueError):
         grid_payload(8, 0)
 
 
-def test_display_state_reports_physical_logo_coupling() -> None:
+def test_display_state_distinguishes_logo_grid_from_visible_logo() -> None:
     clock_only = describe_flags(DISPLAY_CLOCK | DISPLAY_POWER, 0)
     assert clock_only["logo_grid_enabled"] is False
-    assert clock_only["visible_logo_extinction"] == "not_achievable_with_clock_on"
+    assert clock_only["line"] is False
+    assert clock_only["visible_logo_extinction"] == "unverified"
     powered_off = describe_flags(0, 0)
-    assert powered_off["visible_logo_extinction"] == "verified"
+    assert powered_off["visible_logo_extinction"] == "unverified"
+
+
+async def test_partial_display_update_does_not_replay_an_unrelated_clients_flags() -> None:
+    transport = FakeTransport()
+    first = QD35Service(transport, config())
+    second = QD35Service(transport, config())
+    await first.set_display(power=False, clock=False)
+    result = await second.set_display(brightness=2)
+    assert transport.display_flags & (DISPLAY_POWER | DISPLAY_CLOCK) == 0
+    assert transport.display_brightness == 2
+    assert result["state"] == {"brightness": 2}
+    assert result["state_scope"] == "partial_request"
+
+
+async def test_entering_raw_mode_requires_dangerous_gate() -> None:
+    service = QD35Service(FakeTransport(), config(dangerous=False))
+    with pytest.raises(DangerousWritesDisabled):
+        await service.set_display(raw_mode=True)
+    assert (await service.set_display(raw_mode=False))["acknowledged"] is True
 
 
 @pytest.mark.asyncio
@@ -100,6 +122,22 @@ async def test_generic_display_reply_is_compatible_but_does_not_confirm_command(
     assert result["reply_confirms_command"] is False
     assert result["applied"] is None
     assert (await service.display_status())["state_known_this_process"] is False
+
+
+async def test_display_cache_marks_old_session_and_returns_a_snapshot() -> None:
+    transport = FakeTransport()
+    service = QD35Service(transport, config())
+    await service.reset_display()
+    status = await service.display_status()
+    assert status["state_known_this_process"] is True
+    assert status["cached_session_matches"] is True
+    await service.write_display_grid_byte(1, 10)
+    assert status["grid_bytes"] == [None] * 8
+    await transport.disconnect()
+    await transport.connect()
+    status = await service.display_status()
+    assert status["state_known_this_process"] is False
+    assert status["cached_session_matches"] is False
 
 
 @pytest.mark.asyncio

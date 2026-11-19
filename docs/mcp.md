@@ -33,6 +33,7 @@ days to run. See [alarm setup](alarm-clock.md) for the complete flow.
 | `qd35_list_custom_lights` | List official downloads, creative presets, calibration patterns, and palettes |
 | `qd35_apply_diagnostic_light` | Upload one low-brightness protocol-calibration animation |
 | `qd35_apply_authored_light` | Compile and upload bounded local RGB frames; byte four is forced to zero |
+| `qd35_apply_reactive_light` | Compile a sound-reactive asset from 10 bands × 10 intensity levels × 37 RGB colors |
 | `qd35_apply_animation_preset` | Generate and upload `pac_man`, `comet`, `rainbow_wave`, `fireflies`, or `embers` |
 | `qd35_set_light` | Change effect-specific RGB/color mode, global brightness, supported speed, or enabled state |
 | `qd35_reset_light` | Reset one ordinary effect's parameters |
@@ -59,7 +60,7 @@ days to run. See [alarm setup](alarm-clock.md) for the complete flow.
 |---|---|
 | `qd35_get_display_status` | Show locally retained patched-display state and readback limits |
 | `qd35_get_display_firmware_info` | Show bundled patch/source hashes, gates, and fixed install/restore contract |
-| `qd35_set_display` | Patched firmware: control display power, digit/logo/symbol grids, brightness, dial-follow, and raw mode; results disclose clock-to-logo optical coupling |
+| `qd35_set_display` | Patched firmware: control display power, digits, `line`, status symbols, brightness, dial-follow, and raw mode. `logo` is a legacy alias for `line`. Display power controls the physical wordmark. |
 | `qd35_write_display_grid_byte` | Patched firmware expert mode: write one of eight raw CMS1640 grid bytes |
 | `qd35_reset_display` | Patched firmware: restore volatile stock-equivalent display defaults |
 | `qd35_install_display_firmware` | Fetch the exact pinned Edifier source, apply the bundled patch, and flash the pinned QD35 |

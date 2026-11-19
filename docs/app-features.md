@@ -17,7 +17,7 @@ This inventory combines the model-specific Edifier Connect operation manual, the
 | Media metadata/events | Playback, title, and artist notifications | Retained, bounded event history with strict parsing; live `50 00 00 00` event captured |
 | Built-in BGM | 32 app audio tracks across 10 categories, repeat/selection | Not bundled; these are app-local copyrighted media, not BLE-resident tracks |
 | Clock | Sync to host, 12-hour or 24-hour format | Preserve, 12h, and 24h payloads acknowledged live; no clock readback exists |
-| Clock/logo illumination | Stock firmware keeps both on at fixed maximum display-driver brightness while active | The optional patch can dim or blank the driver while Bluetooth stays active. A digits-only raw frame proved the physical wordmark remains illuminated by clock light; only whole-display off fully extinguishes it. |
+| Clock/logo illumination | Stock firmware keeps both on at fixed maximum display-driver brightness while active | The optional patch independently masks clock and wordmark bits and can dim or blank the driver while Bluetooth stays active. Visible logo-only extinction still needs verification. |
 | LDAC | 96 kHz, 48/44.1 kHz, disabled | 48/44.1 kHz and 96 kHz both verified by post-restart readback, then restored off |
 | Device name/info | Rename; show address and firmware | Changed name, exact 35-byte D8 boundary, and restoration verified live |
 | Bluetooth disconnect | Disconnect Classic audio | Live-verified behind dangerous-operation gate |
@@ -29,10 +29,10 @@ This inventory combines the model-specific Edifier Connect operation manual, the
 The 2023 app manual presents ten visual labels/modes. Firmware 1.3.0 directly reports seven selectable effect records in lighting group 1. Four downloadable animations live inside effect 7 (Extended), rather than being additional `6B` effect IDs. The MCP preserves that distinction and uses live-reported IDs.
 
 Firmware disassembly separates the 37-node RGB chain from the CMS1640-driven clock,
-status icons, and EDIFIER wordmark. The wordmark has its own grid bit and the clock
-digits can be blanked internally, but no stock Bluetooth command reaches either
-operation. Electrical separation does not provide optical isolation: the transparent
-front assembly carries clock light into the wordmark. See
+status icons, and EDIFIER wordmark. The wordmark initialization and clock renderer
+write separate bits. Neither operation is exposed by a stock Bluetooth command.
+The earlier bedside test established that the wordmark was still visible with the
+digits-only frame. The source of the residual light remains open. See
 [firmware-analysis.md](firmware-analysis.md).
 
 Primary references:

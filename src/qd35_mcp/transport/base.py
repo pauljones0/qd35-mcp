@@ -60,10 +60,11 @@ class Transport(ABC):
 
     @abstractmethod
     async def send(self, opcode: int, payload: bytes = b"") -> None:
-        """Send a command for which the device does not emit a reply frame."""
+        """Send a command without a response on the current connection."""
 
     @abstractmethod
-    async def request(self, opcode: int, payload: bytes = b"", timeout: float = 4) -> bytes: ...
+    async def request(self, opcode: int, payload: bytes = b"", timeout: float = 4) -> bytes:
+        """Exchange a request on the current connection."""
 
     @abstractmethod
     async def events(self, since_sequence: int = 0, limit: int = 100) -> dict[str, object]:

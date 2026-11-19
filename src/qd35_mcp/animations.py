@@ -15,6 +15,8 @@ FRAME_SIZE = 150
 DEVICE_CAPACITY = 15_360
 MAX_FRAMES = DEVICE_CAPACITY // FRAME_SIZE
 MAX_AUTHORED_DURATION_MS = 10 * 60 * 1000
+REACTIVE_BANDS = 10
+REACTIVE_LEVELS = 10
 _NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,47}$")
 _RGB_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
@@ -127,7 +129,9 @@ class GeneratedAnimation:
         return hashlib.sha256(self.data).hexdigest()
 
     @property
-    def nominal_duration_ms(self) -> int:
+    def nominal_duration_ms(self) -> int | None:
+        if self.light_type == 2:
+            return None
         return sum(
             int.from_bytes(self.data[offset : offset + 2], "big")
             for offset in range(0, len(self.data), FRAME_SIZE)
@@ -174,16 +178,33 @@ def validate_animation(data: bytes) -> dict[str, int]:
     return {"frames": len(data) // FRAME_SIZE, "bytes": len(data)}
 
 
-def compile_authored_animation(
-    name: str,
-    frames: Sequence[tuple[int, Sequence[str]]],
-) -> GeneratedAnimation:
-    """Compile a bounded local RGB animation without accepting files or URLs."""
+def _animation_name(name: str) -> str:
     cleaned_name = name.strip()
     if not _NAME_PATTERN.fullmatch(cleaned_name):
         raise ValueError(
             "animation name must be 1-48 characters using letters, numbers, spaces, _ or -"
         )
+    return cleaned_name
+
+
+def _rgb_frame(colors: Sequence[str], label: str) -> list[Color]:
+    if len(colors) != LIGHT_COUNT:
+        raise ValueError(f"{label} must contain exactly {LIGHT_COUNT} colors")
+    lights: list[Color] = []
+    for light_index, color in enumerate(colors):
+        if not isinstance(color, str) or not _RGB_PATTERN.fullmatch(color):
+            raise ValueError(f"{label} color {light_index} must be #RRGGBB")
+        red, green, blue = bytes.fromhex(color[1:])
+        lights.append((red, green, blue, 0))
+    return lights
+
+
+def compile_authored_animation(
+    name: str,
+    frames: Sequence[tuple[int, Sequence[str]]],
+) -> GeneratedAnimation:
+    """Compile a bounded local RGB animation without accepting files or URLs."""
+    cleaned_name = _animation_name(name)
     if not 1 <= len(frames) <= MAX_FRAMES:
         raise ValueError(f"animation must contain between 1 and {MAX_FRAMES} frames")
 
@@ -194,20 +215,10 @@ def compile_authored_animation(
             raise ValueError(
                 f"frame {frame_index} duration_ms must be between 5 and 60000"
             )
-        if len(colors) != LIGHT_COUNT:
-            raise ValueError(f"frame {frame_index} must contain exactly {LIGHT_COUNT} colors")
-        lights: list[Color] = []
-        for light_index, color in enumerate(colors):
-            if not isinstance(color, str) or not _RGB_PATTERN.fullmatch(color):
-                raise ValueError(
-                    f"frame {frame_index} color {light_index} must be #RRGGBB"
-                )
-            raw = bytes.fromhex(color[1:])
-            lights.append((raw[0], raw[1], raw[2], 0))
         total_duration += duration_ms
         if total_duration > MAX_AUTHORED_DURATION_MS:
             raise ValueError("animation nominal loop duration must not exceed 10 minutes")
-        encoded.append(encode_frame(duration_ms, lights))
+        encoded.append(encode_frame(duration_ms, _rgb_frame(colors, f"frame {frame_index}")))
 
     animation = GeneratedAnimation(
         cleaned_name,
@@ -217,6 +228,30 @@ def compile_authored_animation(
     )
     validate_animation(animation.data)
     return animation
+
+
+def compile_reactive_animation(
+    name: str, bands: Sequence[Sequence[Sequence[str]]]
+) -> GeneratedAnimation:
+    """Build the ten audio channels by ten intensity levels used by the type-2 renderer."""
+    cleaned_name = _animation_name(name)
+    if len(bands) != REACTIVE_BANDS:
+        raise ValueError(f"reactive animation needs exactly {REACTIVE_BANDS} bands")
+    encoded: list[bytes] = []
+    for band_index, levels in enumerate(bands):
+        if len(levels) != REACTIVE_LEVELS:
+            raise ValueError(f"band {band_index} needs exactly {REACTIVE_LEVELS} levels")
+        for level, colors in enumerate(levels):
+            lights = _rgb_frame(colors, f"band {band_index}, level {level}")
+            encoded.append(encode_frame(100, lights))
+    return GeneratedAnimation(
+        cleaned_name,
+        b"".join(encoded),
+        "User-authored RGB frames driven by the speaker's ten audio-analysis channels.",
+        "Play audio to verify the response. The firmware chooses and merges one level per band.",
+        light_type=2,
+        asset_id=26,
+    )
 
 
 def _solid(color: Color) -> list[Color]:
@@ -567,6 +602,27 @@ def _embers() -> GeneratedAnimation:
     )
 
 
+def _spectrum_meter() -> GeneratedAnimation:
+    encoded: list[bytes] = []
+    for band in range(REACTIVE_BANDS):
+        start = band * LIGHT_COUNT // REACTIVE_BANDS
+        end = (band + 1) * LIGHT_COUNT // REACTIVE_BANDS
+        for level in range(REACTIVE_LEVELS):
+            lights = [(0, 0, 0, 0)] * LIGHT_COUNT
+            color = (band * 3 * level, level * 12, (9 - band) * 3 * level, 0)
+            for pixel in DISPLAY_ROUTE[start:end]:
+                lights[pixel] = color
+            encoded.append(encode_frame(100, lights))
+    return GeneratedAnimation(
+        "spectrum_meter",
+        b"".join(encoded),
+        "Ten nonoverlapping groups brighten in response to the speaker's audio analysis.",
+        "Play bass-heavy and treble-heavy audio and compare which groups brighten.",
+        light_type=2,
+        asset_id=26,
+    )
+
+
 _DIAGNOSTIC_BUILDERS = {
     "pixel_chase": _pixel_chase,
     "address_mapper": _address_mapper,
@@ -588,6 +644,7 @@ _CREATIVE_BUILDERS = {
     "rainbow_wave": _rainbow_wave,
     "fireflies": _fireflies,
     "embers": _embers,
+    "spectrum_meter": _spectrum_meter,
 }
 
 

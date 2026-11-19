@@ -86,16 +86,23 @@ effect zero inside the normal `6B` seven-byte payload:
 | `D0` | Set six flag bits in `ARG` and manual brightness 0–7 in `VALUE` |
 | `D1` | Write raw grid byte index 0–7 in `ARG` with byte `VALUE` |
 | `D2` | Reset volatile state to stock-equivalent defaults |
+| `D3` | Apply only the fields selected by the mask, using `01 00 D3 FLAGS LEVEL MASK 35` |
+| `D4` | Patched no-op; stock changes RGB brightness using `01 00 D4 00 00 LEVEL 35` |
 
-`D0` flag bits are display power, clock digits, EDIFIER logo, other symbols,
-follow ordinary lighting brightness, and raw-grid mode. `35` is a mandatory magic
-byte; invalid operations/indexes/brightness are rejected without partially changing
-state. The patched parser returns the ordinary `6B` response so the transport can
-distinguish an accepted frame from a malformed request, but that response is not
-independent display readback. There is no device-side query for the private SRAM
-state. The logo flag masks its dedicated electrical grid; a live raw frame with every
-non-digit bit zero still illuminated the physical wordmark from the clock digits, so
-whole-display off is the only verified full-extinction state.
+`D0` flag bits are display power, clock digits, clock-area line, other symbols,
+follow ordinary lighting brightness, and raw-grid mode. In `D3`, mask bits 0–5
+select those same flags, bit 6 selects the independent `LEVEL` field (0–7), and
+bit 7 is reserved. Zero mask is a no-op. `35` is a mandatory magic byte. Invalid
+private requests do not change state. The firmware returns the ordinary `6B`
+response, which has no private-state readback or patch version. The legacy MCP
+`logo` argument controls the clock-area line. Live tests showed the physical
+wordmark lit with all eight exposed display bytes cleared or set, and dark with
+whole-display power off.
+The separator-preserving patch acknowledges `D4` without changing lighting or
+display state. Stock 1.3.0 also acknowledges it and applies `LEVEL` as ordinary
+RGB brightness. An acknowledgement alone provides no revision evidence. A
+behavioral comparison requires a marker level distinct from current brightness,
+an independent `6A` readback, and restoration of the previous value after the test.
 
 The live D8 block decodes to rename mode 4 (35 UTF-8 bytes, no packaged write), EQ profile 12, UI skin 10, and support for name/address/firmware queries, disconnect, shutdown, reset, LDAC, input, volume, ambient lighting, audio-decoding status, and the hour/minute/second clock dialect. It does not advertise the no-audio auto-shutdown, shutdown timer, separate light-color setting, or lighting timer bits. Byte 19 bit 4 is version-sensitive: app 8.4.33 treats set as media-info support, while 8.5.5 treats clear as support; the live clear bit therefore does not mean metadata is absent, and a `50` event was observed. Capability parsing is length-aware, treats byte 4 as the 8.5.5 bit field, and preserves trailing or unknown data instead of assuming a fixed 22-byte format.
 
@@ -147,6 +154,12 @@ Video calibration on firmware 1.3.0 resolved the timing field. A 37-frame chase 
 The authored-animation tool accepts only inline RGB data: 1–102 frames, exactly 37 `#RRGGBB` colors per frame, 5–60,000 ms per frame, and at most ten minutes of nominal loop time. It never accepts a path or URL, forces byte four to zero, validates the 15,360-byte device bound, and uses the same target, firmware, MTU, acknowledgement, abort, and readback checks as official assets.
 
 Creative presets use the same bounded type-1 compiler without file or network input. Pac-Man and comet follow a 37-address route derived from the pre-SLAM front-view emission map so the visible motion avoids wire order's large 19→20 jump. Rainbow wave rotates hue along that route; fireflies and embers use deterministic per-address oscillators so their binaries remain reproducible and hashable. Firmware analysis confirms that type 1 is the correct literal-pixel interpreter. Type 3 ignores payload records 1–36 and generates Spiral's route internally, so it cannot encode Pac-Man geometry.
+
+The Spectrum Meter preset and `qd35_apply_reactive_light` use type 2 with
+100 records of 150 bytes. Each of the ten analysis channels has ten frames
+ordered from quietest to strongest, and each frame supplies 37 RGB values.
+The speaker chooses and merges frames from its own audio stream. Each upload
+replaces the one Extended asset. See [the type-2 renderer](firmware-analysis.md#type-2).
 
 ## Evidence discipline
 

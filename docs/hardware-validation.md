@@ -13,6 +13,102 @@ The advertisement has no local name, which explains why a name-based initial sca
 
 ## Optional display-patch OTA and controls
 
+### Separator-preserving revision
+
+The 40,932-byte image with SHA-256
+`b2354c561dd02e73e8d8f25599b956d69e58742421f8edc13101a3f7f0786c8a` transferred in
+320 chunks. The speaker answered the new `D4` revision probe after Classic audio
+reconnected. Firmware lineage, Bluetooth input, and the existing Extended asset
+identity were unchanged. Classic reconnection again raised volume to 4/16,
+which was restored to 1/16 and verified. Emulation checked the actual display
+frame for clock on, with the API's `logo` and `symbols` masks off.
+
+The owner observed the following states during a stepped live test on
+2026-11-19 UTC. The RGB lighting was off and front-display brightness
+was fixed at 2 of 7.
+
+| State | Observed | Evidence |
+|---|---|---|
+| Driver off | Clock and logo both dark | Live observation |
+| Driver on, `C0`–`C7` all zero | Logo only | Live observation |
+| Raw digits-only frame | Clock and logo | Live observation |
+| `60 40 40 40 40 40 40 40` | Horizontal line in the clock area and logo | Owner photo |
+| `00 00 00 00 00 00 80 80` | Small striped indicator and logo | Owner photo |
+| `FF FF FF FF FF FF FF FF` | All six digits, both separators, line, status icons and logo lit | Owner close-up of the clock and direct observation of the logo |
+
+In a second live test, the raw `C0`–`C7` frame stayed at zero while the display
+remained enabled. The owner observed a very dim logo at brightness 0 and a
+bright logo at brightness 7. The clock stayed blank at both levels. This
+establishes that the wordmark follows the display driver's brightness setting.
+The logo also stayed lit with all 64 exposed bits set at brightness 2. No
+single exposed bit can be a simple inverted logo switch, since the logo stayed
+lit with all exposed bits clear and with all exposed bits set.
+
+After the owner switched the speaker off at the rear and powered it back on,
+the wordmark was still visible with `C0`–`C7` zeroed at brightness 0. Offline
+replay of the installed revision's startup display routine showed it sending
+16 zero bytes followed by redraws of only `C0`–`C7`. That makes stale data in
+`C8`–`CF` an unlikely explanation. The live test had no bus capture, so it cannot
+establish the electrical connection of the logo.
+
+The field named `logo` masks the horizontal-line group. No tested segment
+pattern independently extinguished the physical wordmark. The runner exited
+successfully after restoring the prior RGB settings and resetting the display to
+firmware defaults. The BLE raw commands did not access `C8`–`CF` directly, and
+the tests did not measure PCB voltages.
+
+### Stock rollback, 2026-11-19 UTC
+
+The stock 1.3.0 OTA sent 40,471 bytes in 317 blocks. The device requested no
+retries and sent no terminal reply during the three-second observation window.
+The same `D4` payload returned `01 06 FF 6A 20 0A FF` before rollback and
+`01 06 FF 6A 20 00 FF` after rollback. A fresh `6A` query confirmed the latter
+reply reflected a brightness change from 10 to 0. Emulation reproduced both
+branches: the patch only sets the reply flag and stock stores the payload's
+brightness field before replying. This verifies that the stock command handler
+is active. The transport cannot read back the installed flash or rule out
+unreferenced bytes from the old patch in its last sector.
+
+The original brightness of 10 and volume of 4/16 were verified after testing.
+The full lighting readback, input, LDAC setting, EQ preset, speaker name, version
+and Extended asset identity matched the pre-rollback snapshot.
+The host's Classic audio connection dropped. BLE controls remained reachable.
+Classic reconnect and pairing attempts timed out or failed to reach the speaker,
+and a targeted Classic inquiry did not find it.
+
+### Patch reinstallation through MCP, 2026-11-19 UTC
+
+A live stdio MCP client called `qd35_install_display_firmware` on the stock
+1.3.0 speaker. The server fetched and verified Edifier's pinned image and sent
+the 40,932-byte patch build in 320 blocks with zero retries. On reconnect,
+`D4` acknowledged a brightness marker of 9 while an independent `6A` query
+still showed the original brightness 10. The unsupported `D5` control elicited
+no reply while the link was up. A fresh connection then read ordinary status
+successfully. The before and after settings snapshots matched.
+
+### Masked-update revision, 2026-11-18 UTC
+
+The 40,936-byte image with SHA-256
+`02eb94086be44eb36e7bb5514bdcb25fce9b4726de92950646cebce7605f3394` was sent in
+320 OTA chunks. The Classic audio link dropped during the update. A 30-second
+BLE scan found no advertisement until the host reconnected Classic audio, after
+which the speaker returned its expected identity and firmware lineage 1.3.0.
+
+The new `D3` command returned the ordinary lighting payload `01 06 FF 6A 20 0A FF`
+for brightness-only and power-only updates. A zero-mask `D3` probe got the same
+reply and the adjacent unsupported `D4` opcode got no reply. That comparison
+confirms the new private command is executing. BLE provides no readback for the
+private settings. Brightness changes and display extinction for this revision
+still need optical confirmation.
+
+The display was returned to its firmware defaults. Ordinary lighting and input
+settings were stable across the command probes. Classic audio reconnection raised
+the observed volume from 1/16 to 4/16. The original 1/16 was restored and verified
+with a volume query. The live identity and state test passed, and the host
+released its Classic audio connection afterward.
+
+### Earlier revisions
+
 The exact official 1.3.0 lighting-MCU image was patched deterministically from
 40,471 to 40,880 bytes and transferred over the app-confirmed ordinary OTA v2 path.
 The speaker requested 128-byte blocks, producing 320 acknowledged chunks. A short
@@ -43,11 +139,13 @@ segment dark, independently confirming that the installed hook executes. The ala
 night state therefore uses whole-display off rather than claiming a visually verified
 clock-only/logo-off state.
 
-That targeted grid test was subsequently completed. Raw mode wrote the current six
+That targeted grid test was subsequently completed. Raw mode requested the current six
 time digits into grid bytes `1..7` while byte `0` and every non-digit bit remained
 zero (`00 1E 19 03 1F 3D 27 1F` for `02:35:51`). The EDIFIER wordmark was still
-visibly illuminated. This rules out a semantic mask, stale source buffer, or unknown
-logo bit: the wordmark catches light from the active digit segments. A corrected
+visible. An offline replay later confirmed the expected RAM transaction through
+the bit-banged GPIO and found that the earlier image still sent maximum
+brightness between each frame write and the requested minimum. The earlier
+visual test did not establish what caused the residual. A corrected
 400-byte patch also fixed the clock-off mask inversion and enforced a strict
 digits-only framebuffer. It transferred as 320/320 acknowledged 128-byte chunks with
 SHA-256 `83ef705bc545db3b6054a48add9e310ace886fbb76312abe7204229c35891b5b`.
@@ -112,7 +210,7 @@ A structure-from-motion cross-check extracted 98 geometry views from the same re
 
 The generated `spiral_color_probe` was also transferred live as one 150-byte type-3 chunk. The speaker acknowledged sequence 1, completion succeeded, `78` read back Spiral's compatibility asset ID `01`, and Extended activated at 5% brightness. That first low-brightness observation made the motion look ring-only and produced an informal estimate of roughly 11 positions. After raising global brightness to 20%, the lower strip was plainly visible too, matching Edifier's manual: the center travels clockwise while the lower guide travels right-to-left. The earlier estimate is rejected as a measurement artifact, not recorded as an LED count.
 
-A [published NEW-X teardown](https://www.ednchina.com/technews/22905.html) shows the QD35-equivalent lighting board and explicitly counts 20 physical RGB LED packages. The upload format nevertheless contains 37 RGBX entries. Physical packages, uploaded entries, and visible light-guide positions are therefore tracked as separate quantities. Exact type-3 payload sampling remains pending a stable recording of the unique-color `spiral_index_probe`.
+A [published NEW-X teardown](https://www.52audio.com/archives/167663.html) counts 20 physical RGB packages on the lower display PCB. That count covers one board. The international QD35 firmware sends 37 RGB words and the synchronized recording resolved 37 illuminated positions, 20 below the front panel and 17 around the mid-bass driver. The type-3 firmware path reads only the first RGB color and generates the path on the device.
 
 ## Media control
 

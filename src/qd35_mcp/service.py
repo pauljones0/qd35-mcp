@@ -17,6 +17,7 @@ from .animations import (
     build_creative_animation,
     build_diagnostic_animation,
     compile_authored_animation,
+    compile_reactive_animation,
     list_creative_animations,
     list_diagnostic_animations,
 )
@@ -30,10 +31,12 @@ from .display import (
     DISPLAY_POWER,
     DISPLAY_RAW_MODE,
     DISPLAY_SYMBOLS,
+    DISPLAY_UPDATE_BRIGHTNESS,
     describe_flags,
     grid_payload,
     reset_payload,
     state_payload,
+    state_update_payload,
 )
 from .errors import (
     DangerousWritesDisabled,
@@ -230,9 +233,14 @@ class QD35Service:
             await self._verify_qd35_target()
             if self.transport.connection_identity != identity:
                 raise ProtocolError("Bluetooth session changed while verifying the QD35 target")
-        if opcode in c.MUTATING_OPCODES and self._transaction_active:
-            self._transaction_mutated = True
-        return await self.transport.request(opcode, payload, self.config.request_timeout)
+        mutating = opcode in c.MUTATING_OPCODES and self._transaction_active
+        try:
+            response = await self.transport.request(opcode, payload, self.config.request_timeout)
+        except OutcomeUnknown:
+            self._transaction_mutated |= mutating
+            raise
+        self._transaction_mutated |= mutating
+        return response
 
     async def _verify_qd35_target(self) -> dict[str, object]:
         """Establish model-specific evidence before the first physical write."""
@@ -405,11 +413,10 @@ class QD35Service:
                 "factory reset",
                 *(
                     [
-                        "display power, clock digits, logo-grid and symbol-grid masks",
-                        "verified whole-display extinction; the visible EDIFIER wordmark "
-                        "cannot be fully dark while clock digits are lit",
+                        "display power, clock digits, clock-area line, and status symbol masks",
+                        "whole-display off extinguishes the physical wordmark",
                         "display brightness 0-7 or follow the right-side lighting dial",
-                        "raw access to all eight CMS1640 display-grid bytes",
+                        "raw access to the eight display RAM bytes used by QD35 firmware",
                     ]
                     if self.config.custom_display_firmware
                     else []
@@ -434,7 +441,7 @@ class QD35Service:
                         )
                     }
                 ),
-                "firmware_update": "No newer official QD35 image is currently offered",
+                "firmware_update": "The server does not check Edifier for newer firmware",
                 "built_in_bgm": "The 32 audio files are app-local media, not speaker BLE commands",
                 "remote_power_on": "Not supported by the official app",
                 **(
@@ -442,7 +449,7 @@ class QD35Service:
                     if self.config.custom_display_firmware
                     else {
                         "custom_display": (
-                            "Stock firmware lacks independent clock/logo controls. Build and "
+                            "Stock firmware lacks custom display controls. Build and "
                             "install the exact-hash MCU patch, then set "
                             "QD35_CUSTOM_DISPLAY_FIRMWARE=1."
                         )
@@ -460,20 +467,22 @@ class QD35Service:
 
     async def display_status(self) -> dict[str, object]:
         """Return the last requested display state and whether the command was echoed."""
+        current_session = self.transport.connection_identity
+        matching_session = (
+            current_session is not None and current_session == self._display_session_identity
+        )
         return {
             "available": self.config.custom_display_firmware,
-            "state_known_this_process": self._display_state_known,
+            "state_known_this_process": self._display_state_known and matching_session,
+            "cached_session_matches": matching_session,
             "state": describe_flags(self._display_flags, self._display_brightness),
-            "grid_bytes": self._display_grid,
+            "grid_bytes": self._display_grid.copy(),
             "device_readback": False,
             "volatile": True,
             "note": (
                 "The patch resets to display on, clock/logo/symbols on, brightness 7 after a "
                 "speaker power cycle. Values here are locally retained requests; the "
-                "ordinary lighting reply does not confirm the display command. "
-                "The logo grid can be masked, but the visible wordmark remains illuminated "
-                "whenever clock digits are lit; whole-display off is the only verified "
-                "full-extinction state."
+                "ordinary lighting reply does not confirm the visual result."
             ),
         }
 
@@ -518,8 +527,8 @@ class QD35Service:
         follow_lighting_dial: bool | None = None,
         raw_mode: bool | None = None,
     ) -> dict[str, object]:
-        """Set patched driver masks; front-panel coupling keeps the logo visible with digits."""
-        self._display_write_allowed()
+        """Set patched display controls. The logo argument masks the clock-area line."""
+        self._display_write_allowed(dangerous=raw_mode is True)
         if brightness is not None and not 0 <= brightness <= 7:
             raise ValueError("brightness must be from 0 to 7")
         updates = {
@@ -533,21 +542,40 @@ class QD35Service:
         if all(value is None for value in updates.values()) and brightness is None:
             raise ValueError("provide at least one display setting to change")
         flags = self._display_flags
+        mask = 0
         for bit, value in updates.items():
+            if value is not None:
+                mask |= bit
             if value is True:
                 flags |= bit
             elif value is False:
                 flags &= ~bit
         level = self._display_brightness if brightness is None else brightness
-        response, echoed = await self._display_request(state_payload(flags, level))
+        if brightness is not None:
+            mask |= DISPLAY_UPDATE_BRIGHTNESS
+        complete = mask == 0x7F
+        payload = state_payload(flags, level) if complete else state_update_payload(
+            flags & mask, brightness if brightness is not None else 0, mask
+        )
+        response, echoed = await self._display_request(payload)
         self._display_flags = flags
         self._display_brightness = level
-        self._display_state_known = echoed
+        self._display_state_known = echoed and complete
         self._display_session_identity = self.transport.connection_identity
+        requested = {
+            key: value for key, value in {
+                "power": power, "clock": clock, "logo": logo, "symbols": symbols,
+                "brightness": brightness, "follow_lighting_dial": follow_lighting_dial,
+                "raw_mode": raw_mode,
+            }.items() if value is not None
+        }
+        if logo is not None:
+            requested["line"] = logo
         return {
             "acknowledged": True,
             "applied": None,
-            "state": describe_flags(flags, level),
+            "state": describe_flags(flags, level) if complete else requested,
+            "state_scope": "complete_request" if complete else "partial_request",
             "acknowledgement_hex": response.hex(),
             "reply_confirms_command": echoed,
             "device_readback": False,
@@ -593,7 +621,7 @@ class QD35Service:
 
     @serialized_mutation
     async def install_display_firmware(self, stock_image: bytes) -> dict[str, object]:
-        """Install the exact-hash display patch; deliberately not registered as an MCP tool."""
+        """Install the exact-hash display patch using the supplied stock image."""
         self._firmware_install_allowed(require_patch_enabled=True)
         if not self.config.device:
             raise ProtocolError(
@@ -616,6 +644,7 @@ class QD35Service:
             "target": verified,
             "stock_sha256": STOCK_SHA256,
             "patched_sha256": PATCHED_SHA256,
+            "transmitted_sha256": PATCHED_SHA256,
             "transfer": transfer,
             "verification_required": True,
             "next_step": (
@@ -626,7 +655,7 @@ class QD35Service:
 
     @serialized_mutation
     async def restore_stock_firmware(self, stock_image: bytes) -> dict[str, object]:
-        """Restore the exact official image; deliberately not registered as an MCP tool."""
+        """Send the exact supplied official image for stock restoration."""
         self._firmware_install_allowed(require_patch_enabled=False)
         if len(stock_image) != STOCK_SIZE or sha256(stock_image) != STOCK_SHA256:
             raise ValueError("restore requires the exact supported official QD35 1.3.0 image")
@@ -646,7 +675,7 @@ class QD35Service:
         transfer = await self.transport.ota_update(stock_image, (1, 3, 0))
         return {
             "target": verified,
-            "restored_sha256": STOCK_SHA256,
+            "transmitted_sha256": STOCK_SHA256,
             "transfer": transfer,
             "verification_required": True,
         }
@@ -919,6 +948,7 @@ class QD35Service:
         if self._verified_identity != self.transport.connection_identity:
             await self._verify_qd35_target()
         await self.transport.send(c.MEDIA_CONTROL, bytes((c.MEDIA_ACTIONS[action],)))
+        self._transaction_mutated = True
         await asyncio.sleep(0.1)
         try:
             after = parse_playback(await self._request(c.QUERY_PLAYBACK))
@@ -1497,6 +1527,19 @@ class QD35Service:
             activate,
             activation_brightness,
             animation,
+        )
+
+    async def apply_reactive_light(
+        self,
+        name: str,
+        bands: Sequence[Sequence[Sequence[str]]],
+        activate: bool = True,
+        activation_brightness: int | None = None,
+    ) -> dict[str, object]:
+        """Compile and upload the firmware's bounded audio-reactive RGB layout."""
+        animation = compile_reactive_animation(name, bands)
+        return await self.apply_custom_light(
+            animation.name, None, activate, activation_brightness, animation
         )
 
     async def _best_effort_custom_light_abort(self) -> bool:

@@ -8,9 +8,11 @@ from ..display import (
     DISPLAY_MAGIC,
     DISPLAY_RESET,
     DISPLAY_SET_STATE,
+    DISPLAY_UPDATE_BRIGHTNESS,
+    DISPLAY_UPDATE_STATE,
     DISPLAY_WRITE_GRID,
 )
-from ..errors import DeviceNotFound, OutcomeUnknown
+from ..errors import DeviceNotFound, OutcomeUnknown, TransportError
 from .base import DeviceCandidate, DeviceEvent, Transport
 
 
@@ -112,7 +114,9 @@ class FakeTransport(Transport):
 
     async def prepare_large_write(self, minimum_size: int) -> int:
         if not self._connected:
-            await self.connect()
+            raise TransportError("simulated Bluetooth session is disconnected")
+        if not 1 <= minimum_size <= 509:
+            raise TransportError("simulated ATT capacity is 509 bytes")
         return 509
 
     async def ota_update(
@@ -121,15 +125,17 @@ class FakeTransport(Transport):
         version: tuple[int, int, int],
     ) -> dict[str, object]:
         if not self._connected:
-            await self.connect()
+            raise TransportError("simulated Bluetooth session is disconnected")
         self.last_ota_image = image
         self.last_ota_version = version
         return {
             "bytes_sent": len(image),
             "chunks_sent": (len(image) + 511) // 512,
+            "block_retries_sent": 0,
             "target_version": ".".join(map(str, version)),
             "final_chunk_sent": True,
             "completion_readback": False,
+            "connection_dropped": False,
         }
 
     def _emit(self, opcode: int, payload: bytes) -> None:
@@ -137,7 +143,7 @@ class FakeTransport(Transport):
         self._events.append(
             DeviceEvent(
                 sequence=self._event_sequence,
-                session=1,
+                session=self._session,
                 observed_at=datetime.now().astimezone().isoformat(),
                 opcode=opcode,
                 payload=payload,
@@ -148,7 +154,7 @@ class FakeTransport(Transport):
         if not self.powered:
             raise DeviceNotFound("simulated speaker is powered off")
         if not self._connected:
-            await self.connect()
+            raise TransportError("simulated Bluetooth session is disconnected")
         if opcode == c.MEDIA_CONTROL:
             self.last_media_action = payload[0]
             if payload[0] == c.MEDIA_ACTIONS["play"]:
@@ -161,7 +167,7 @@ class FakeTransport(Transport):
         if not self.powered:
             raise DeviceNotFound("simulated speaker is powered off")
         if not self._connected:
-            await self.connect()
+            raise TransportError("simulated Bluetooth session is disconnected")
         if opcode == c.QUERY_VOLUME:
             return bytes((self.maximum, self.volume))
         if opcode == c.SET_VOLUME:
@@ -230,6 +236,11 @@ class FakeTransport(Transport):
                 if payload[2] == DISPLAY_SET_STATE:
                     self.display_flags = payload[3] & 0x3F
                     self.display_brightness = payload[4]
+                elif payload[2] == DISPLAY_UPDATE_STATE:
+                    mask = payload[5] & 0x3F
+                    self.display_flags = (self.display_flags & ~mask) | (payload[3] & mask)
+                    if payload[5] & DISPLAY_UPDATE_BRIGHTNESS:
+                        self.display_brightness = payload[4]
                 elif payload[2] == DISPLAY_WRITE_GRID:
                     self.display_grid[payload[3]] = payload[4]
                 elif payload[2] == DISPLAY_RESET:
