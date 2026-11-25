@@ -215,12 +215,39 @@ def exercise_reactive(stock: bytes) -> None:
     print("Passed 100 Spectrum Meter band/level cases in the stock type-2 renderer.")
 
 
+def exercise_volume_feedback(stock: bytes) -> None:
+    em = ReactiveRendererEmulator(patch_image(stock))
+    em.seed(15, 4, 74)
+    em.cpu.mem_write(GLOBAL + 0x13, b"\x05")  # Static effect, internal zero-based ID.
+    em.cpu.mem_write(GLOBAL + 0x1A, b"\x04")
+    em.cpu.mem_write(GLOBAL + 0x32, b"\xff\x6a\x20")
+    em.enter(0x080066CC)
+    rgb_buffer = 0x2000162C
+    original = bytes(em.cpu.mem_read(rgb_buffer, LIGHT_COUNT * 3))
+    assert all(original)
+
+    em.cpu.mem_write(COMMAND, b"+VOL+005\x00")
+    em.cpu.reg_write(UC_ARM_REG_R4, COMMAND)
+    em.enter(0x08002DFE, PARSER_TAIL)
+    assert em.cpu.mem_read(GLOBAL + 0x1A, 1) == b"\x05"
+    assert em.cpu.mem_read(GLOBAL + 0x84, 2) == b"\xc8\x00"
+    em.enter(0x080066CC)
+    overlay = bytes(em.cpu.mem_read(rgb_buffer, LIGHT_COUNT * 3))
+    assert sum(any(overlay[offset:offset + 3]) for offset in range(0, len(overlay), 3)) == 6
+
+    em.cpu.mem_write(GLOBAL + 0x84, b"\x00\x00")
+    em.enter(0x080066CC)
+    assert em.cpu.mem_read(rgb_buffer, LIGHT_COUNT * 3) == original
+    print("Reproduced the RGB volume-bar overlay and return to static lighting.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("stock", type=Path, help="exact official 1.3.0 image")
     stock = parser.parse_args().stock.read_bytes()
     exercise(stock)
     exercise_reactive(stock)
+    exercise_volume_feedback(stock)
 
 
 if __name__ == "__main__":

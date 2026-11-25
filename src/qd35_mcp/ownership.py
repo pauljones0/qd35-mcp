@@ -27,6 +27,30 @@ def _runtime_dir() -> Path:
     return (runtime if runtime.is_dir() else Path.home() / ".cache") / "qd35-mcp"
 
 
+@asynccontextmanager
+async def file_lock(path: Path, kind: str, timeout: float) -> AsyncIterator[None]:
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except OSError as exc:
+        raise TransportError(f"Cannot open the QD35 {kind} lock: {exc}") from exc
+    try:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as exc:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise SpeakerBusy(f"DEVICE_BUSY: another process owns QD35 {kind}") from exc
+                await asyncio.sleep(min(0.05, remaining))
+        yield
+    finally:
+        # Never unlink lock files. Waiters must continue to share the same inode.
+        os.close(fd)
+
+
 @dataclass(frozen=True, slots=True)
 class AudioLease:
     alarm_id: str
@@ -61,25 +85,10 @@ class SpeakerOwnership:
             info = self.root.lstat()
             if self.root.is_symlink() or info.st_uid != os.getuid() or info.st_mode & 0o077:
                 raise PermissionError("ownership directory must be private to the current user")
-            fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         except OSError as exc:
             raise TransportError(f"Cannot open the QD35 {kind} lock: {exc}") from exc
-        try:
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + timeout
-            while True:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError as exc:
-                    remaining = deadline - loop.time()
-                    if remaining <= 0:
-                        raise SpeakerBusy(f"DEVICE_BUSY: another process owns QD35 {kind}") from exc
-                    await asyncio.sleep(min(0.05, remaining))
+        async with file_lock(path, kind, timeout):
             yield
-        finally:
-            # Never unlink lock files. Waiters must continue to share the same inode.
-            os.close(fd)
 
     def audio_addresses(self) -> list[str]:
         return [path.stem.removeprefix("audio-") for path in self.root.glob("audio-*.json")]

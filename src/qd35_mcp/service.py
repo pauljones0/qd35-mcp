@@ -322,6 +322,15 @@ class QD35Service:
         async with self._transaction():
             return await self._status_locked()
 
+    @property
+    def alarm_control_connected(self) -> bool:
+        return self.transport.connected
+
+    async def reconnect_alarm_controls(self) -> dict[str, object]:
+        async with self._transaction():
+            await self._request(c.QUERY_CAPABILITIES)
+            return parse_volume(await self._request(c.QUERY_VOLUME))
+
     async def alarm_control(self, field: str) -> dict[str, object]:
         """Read one side-control setting without running the full status sweep."""
         opcode, parser = {

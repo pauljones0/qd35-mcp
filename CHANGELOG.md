@@ -2,7 +2,19 @@
 
 ## Unreleased
 
+- Fade alarm audio and sunrise RGB light down over the final 2 minutes (`fade_out_minutes=2`)
+  before the scheduled post-wake cutoff, while keeping manual Stop and Snooze immediate.
+- Fade alarm audio in the player to avoid triggering the QD35's RGB volume indicator at
+  each volume step.
 - Confirm physical snooze with fresh speaker readback and rearm the snooze timer on every retry.
+- Keep physical snooze active while alarm radio plays after the sunrise fade.
+- Preserve the original alarm cutoff across snoozes and report snoozed playback as active.
+- Turn RGB off and restore the normal front display when an audio alarm finishes.
+- Enforce playback deadlines during BLE stalls, retry stopped radio playback, and recover dial
+  monitoring after a Bluetooth dropout.
+- Retry failed bedtime preparation. Attempt RGB and display changes independently, and restore
+  daytime lighting when stopping an active alarm.
+- Reject snoozes for idle alarms and serialize schedule edits across MCP clients.
 - Verify PipeWire audio routing before the speaker volume rises. Retry failed playback, preserve
   the scheduled cutoff after a late start, and skip expired bedtime and wake windows.
 - Coordinate BLE transactions across processes and give every alarm an expiring Classic-audio

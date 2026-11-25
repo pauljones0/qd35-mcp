@@ -109,6 +109,7 @@ async def test_real_stdio_server_contract(tmp_path) -> None:
             assert "bedtime" in alarm_properties
             assert alarm_properties["physical_snooze_minutes"]["default"] == 10
             assert alarm_properties["post_wake_minutes"]["default"] == 30
+            assert alarm_properties["fade_out_minutes"]["default"] == 2
             assert by_name["qd35_install_display_firmware"].input_schema["properties"][
                 "confirmation"
             ]["const"] == "INSTALL DISPLAY PATCH"

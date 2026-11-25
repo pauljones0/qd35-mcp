@@ -42,6 +42,7 @@ def register_alarm_tools(server: MCPServer, alarm_manager: AlarmManager) -> None
         target_speaker_volume: Annotated[int, Field(ge=0, le=8)] = 4,
         physical_snooze_minutes: Annotated[int, Field(ge=1, le=60)] = 10,
         post_wake_minutes: Annotated[int, Field(ge=0, le=180)] = 30,
+        fade_out_minutes: Annotated[int, Field(ge=0, le=60)] = 2,
     ) -> dict[str, object]:
         """Create or replace a sunrise alarm by name. Wake time is the end of the light ramp."""
         return await call(
@@ -61,6 +62,7 @@ def register_alarm_tools(server: MCPServer, alarm_manager: AlarmManager) -> None
             target_speaker_volume,
             physical_snooze_minutes,
             post_wake_minutes,
+            fade_out_minutes,
         )
 
     @server.tool(
@@ -84,7 +86,7 @@ def register_alarm_tools(server: MCPServer, alarm_manager: AlarmManager) -> None
         alarm_id: str,
         minutes: Annotated[int, Field(ge=1, le=60)] = 10,
     ) -> dict[str, object]:
-        """Stop audio, restore the dark night state, and restart with a short fade later."""
+        """Stop audio and darken the speaker, then resume before the original alarm cutoff."""
         return await call(alarm_manager.snooze, alarm_id, minutes)
 
     @server.tool(

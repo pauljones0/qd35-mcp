@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 SYSTEMD_DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 ALARM_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
+# Keep Classic available briefly for BLE cleanup after the player has stopped.
+AUDIO_CLEANUP_GRACE_SECONDS = 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +40,7 @@ class SunriseAlarm:
     snooze_fade_minutes: int = 2
     physical_snooze_minutes: int = 10
     post_wake_minutes: int = 30
+    fade_out_minutes: int = 2
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> SunriseAlarm:
@@ -65,6 +68,7 @@ class SunriseAlarm:
             snooze_fade_minutes=int(value.get("snooze_fade_minutes", 2)),
             physical_snooze_minutes=int(value.get("physical_snooze_minutes", 10)),
             post_wake_minutes=int(value.get("post_wake_minutes", 30)),
+            fade_out_minutes=int(value.get("fade_out_minutes", 2)),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -137,20 +141,28 @@ def _local_time(day: date, clock: str, zone: ZoneInfo) -> datetime:
     return datetime(day.year, day.month, day.day, hour, minute, tzinfo=zone).astimezone(UTC)
 
 
+def wake_cutoff(alarm: SunriseAlarm, wake: datetime) -> datetime:
+    return wake + timedelta(minutes=alarm.post_wake_minutes if alarm.audio_source else 0)
+
+
+def start_for_wake(alarm: SunriseAlarm, wake: datetime) -> datetime:
+    zone = ZoneInfo(alarm.timezone)
+    start_time, _ = alarm_start_schedule(alarm)
+    day_shift = int(start_time > alarm.wake_time)
+    return _local_time(wake.astimezone(zone).date() - timedelta(days=day_shift), start_time, zone)
+
+
 def active_wake_window(alarm: SunriseAlarm, now: datetime) -> tuple[datetime, datetime] | None:
     """Return the scheduled ramp start and wake time if this timer can still catch up."""
     zone = ZoneInfo(alarm.timezone)
     day = now.astimezone(zone).date()
-    start_time, _ = alarm_start_schedule(alarm)
-    start_day_shift = -1 if start_time > alarm.wake_time else 0
-    after_wake = timedelta(minutes=alarm.post_wake_minutes if alarm.audio_source else 0)
     for offset in (-1, 0, 1):
         wake_day = day + timedelta(days=offset)
         if WEEKDAYS[wake_day.weekday()] not in alarm.weekdays:
             continue
         wake = _local_time(wake_day, alarm.wake_time, zone)
-        start = _local_time(wake_day + timedelta(days=start_day_shift), start_time, zone)
-        if start <= now < wake + after_wake:
+        start = start_for_wake(alarm, wake)
+        if start <= now < wake_cutoff(alarm, wake):
             return start, wake
     return None
 

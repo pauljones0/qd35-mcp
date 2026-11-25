@@ -172,3 +172,26 @@ async def test_overlapping_runner_is_blocked_before_touching_the_speaker(tmp_pat
         result = await alarm_runner._run_owned(Plan())
     assert result["completed"] is False
     assert "DEVICE_BUSY" in result["error"]
+
+
+async def test_scheduled_wake_can_wait_for_a_bedtime_cleanup(tmp_path, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from test_alarm_runner import alarm
+
+    ownership = SpeakerOwnership(tmp_path / "runtime")
+    plan = alarm(ble_device=BLE)
+    now = datetime.now(UTC)
+
+    async def run(*_args, **_kwargs):
+        return {"completed": True}
+
+    monkeypatch.setattr(alarm_runner, "SpeakerOwnership", lambda: ownership)
+    monkeypatch.setattr(alarm_runner, "run_alarm", run)
+    async with ownership.lock("alarm", BLE):
+        wake = asyncio.create_task(alarm_runner._run_owned(
+            plan, scheduled_window=(now, now + timedelta(minutes=1)),
+        ))
+        await asyncio.sleep(0.02)
+        assert not wake.done()
+    assert await asyncio.wait_for(wake, 1) == {"completed": True}

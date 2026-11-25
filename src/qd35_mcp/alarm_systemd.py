@@ -8,7 +8,9 @@ import re
 import subprocess
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 from .alarm_schedule import (
     ALARM_ID_PATTERN,
@@ -20,6 +22,7 @@ from .errors import TransportError
 from .ownership import SpeakerOwnership
 
 KEEPALIVE_UNIT = "qd35-alarm-audio-keepalive.service"
+_SNOOZE_CUTOFF_COMMENT = "# QD35 wake cutoff: "
 
 
 def default_unit_dir() -> Path:
@@ -219,28 +222,35 @@ class SystemdUserTimers:
         self._run("daemon-reload")
 
     def start_now(self, alarm_id: str) -> None:
+        self._run("stop", self._snooze_unit_name(alarm_id, "timer"), check=False)
         self._run("start", self._unit_name(alarm_id, "service"))
 
     def stop(self, alarm_id: str) -> None:
-        self._run("stop", self._unit_name(alarm_id, "service"))
         self._run("stop", self._snooze_unit_name(alarm_id, "timer"), check=False)
+        self._run("stop", self._unit_name(alarm_id, "service"))
         self._run("stop", self._snooze_unit_name(alarm_id, "service"))
         prepare = self._unit_name(f"{alarm_id}-prepare", "service")
         if (self.unit_dir / prepare).exists():
             self._run("stop", prepare)
 
-    def snooze(self, alarm_id: str, minutes: int) -> None:
+    def snooze(self, alarm_id: str, minutes: int, *, cutoff: datetime | None = None) -> None:
         if not ALARM_ID_PATTERN.fullmatch(alarm_id) or not 1 <= minutes <= 60:
             raise ValueError("snooze requires a valid alarm and 1-60 minutes")
         self.stop(alarm_id)
-        self.schedule_snooze(alarm_id, minutes)
+        self.schedule_snooze(alarm_id, minutes, cutoff=cutoff)
 
-    def schedule_snooze(self, alarm_id: str, minutes: int) -> None:
+    def schedule_snooze(
+        self, alarm_id: str, minutes: int, *, cutoff: datetime | None = None
+    ) -> None:
         """Install a snooze timer without stopping the calling alarm process."""
         if not ALARM_ID_PATTERN.fullmatch(alarm_id) or not 1 <= minutes <= 60:
             raise ValueError("snooze requires a valid alarm and 1-60 minutes")
         timer_name = self._snooze_unit_name(alarm_id, "timer")
+        deadline_comment = (
+            f"{_SNOOZE_CUTOFF_COMMENT}{cutoff.astimezone(UTC).isoformat()}\n" if cutoff else ""
+        )
         timer = (
+            f"{deadline_comment}"
             "[Unit]\n"
             f"Description=Snooze QD35 alarm {alarm_id}\n\n"
             "[Timer]\n"
@@ -248,18 +258,43 @@ class SystemdUserTimers:
             "AccuracySec=1s\n"
             f"Unit={self._snooze_unit_name(alarm_id, 'service')}\n"
         )
-        (self.unit_dir / timer_name).write_text(timer, encoding="utf-8")
+        # Keep the resume timer and its original deadline in one atomic update.
+        with NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=self.unit_dir, delete=False
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            try:
+                temporary.write(timer)
+                temporary.close()
+                temporary_path.replace(self.unit_dir / timer_name)
+            finally:
+                temporary_path.unlink(missing_ok=True)
         self._run("daemon-reload")
         self._run("restart", timer_name)
+
+    def snooze_cutoff(self, alarm_id: str) -> datetime | None:
+        path = self.unit_dir / self._snooze_unit_name(alarm_id, "timer")
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.startswith(_SNOOZE_CUTOFF_COMMENT):
+                    return datetime.fromisoformat(line.removeprefix(_SNOOZE_CUTOFF_COMMENT))
+        except FileNotFoundError:
+            return None
+        return None
 
     def state(self, alarm_id: str) -> dict[str, object]:
         timer = self._unit_name(alarm_id, "timer")
         service = self._unit_name(alarm_id, "service")
         enabled = self._run("is-enabled", timer, check=False)
         active = self._run("is-active", service, check=False)
+        snooze = self._run(
+            "is-active", self._snooze_unit_name(alarm_id, "service"), check=False
+        )
+        snooze_running = snooze.stdout.strip() == "active"
         return {
             "timer_enabled": enabled.stdout.strip() == "enabled",
-            "service_active": active.stdout.strip() == "active",
+            "service_active": active.stdout.strip() == "active" or snooze_running,
+            "snooze_service_active": snooze_running,
             "preparation_timer_enabled": (
                 self._run(
                     "is-enabled",

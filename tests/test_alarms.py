@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from dataclasses import replace
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
+from qd35_mcp import alarms as alarm_module
 from qd35_mcp.alarms import (
     AlarmManager,
     AlarmStore,
@@ -149,6 +153,10 @@ class FakeTimers:
         self.keepalive_installed: list[str] = []
         self.keepalive_removed = 0
         self.snoozed: list[tuple[str, int]] = []
+        self.cutoff: datetime | None = None
+        self.active = False
+        self.snooze_pending = False
+        self.snooze_running = False
 
     def install(self, alarm: SunriseAlarm) -> None:
         self.installed.append(alarm)
@@ -158,19 +166,29 @@ class FakeTimers:
 
     def start_now(self, alarm_id: str) -> None:
         self.started.append(alarm_id)
+        self.active = True
+        self.snooze_pending = False
 
     def stop(self, alarm_id: str) -> None:
         self.stopped.append(alarm_id)
+        self.active = self.snooze_running = self.snooze_pending = False
 
-    def snooze(self, alarm_id: str, minutes: int) -> None:
-        self.stopped.append(alarm_id)
+    def snooze(self, alarm_id: str, minutes: int, *, cutoff: datetime | None = None) -> None:
+        self.stop(alarm_id)
         self.snoozed.append((alarm_id, minutes))
+        self.cutoff = cutoff
+        self.snooze_pending = True
+
+    def snooze_cutoff(self, _alarm_id: str) -> datetime | None:
+        return self.cutoff
 
     def state(self, _alarm_id: str) -> dict[str, object]:
         return {
             "timer_enabled": True,
-            "service_active": False,
+            "service_active": self.active or self.snooze_running,
             "preparation_timer_enabled": True,
+            "snooze_active": self.snooze_pending,
+            "snooze_service_active": self.snooze_running,
         }
 
     def keepalive_state(self) -> dict[str, object]:
@@ -218,6 +236,7 @@ async def test_manager_persists_and_controls_alarm(tmp_path) -> None:
     assert timers.installed[0].clock_format == "12h"
     assert timers.installed[0].physical_snooze_minutes == 10
     assert timers.installed[0].post_wake_minutes == 30
+    assert timers.installed[0].fade_out_minutes == 2
 
     listed = await manager.list()
     assert listed["count"] == 1
@@ -226,10 +245,10 @@ async def test_manager_persists_and_controls_alarm(tmp_path) -> None:
     assert keepalive["active"] is True
     assert keepalive["speaker_disconnect_command_sent"] is False
     assert (await manager.start_now("weekday-wake"))["started"] is True
-    assert (await manager.stop("weekday-wake"))["bluetooth_disconnected"] is False
     snoozed = await manager.snooze("weekday-wake", 10)
     assert snoozed["snoozed"] is True
     assert snoozed["night_light_applied"] is True
+    assert (await manager.stop("weekday-wake"))["bluetooth_disconnected"] is False
     assert (await manager.delete("weekday-wake"))["deleted"] is True
     assert timers.started == ["weekday-wake"]
     assert timers.stopped == ["weekday-wake", "weekday-wake"]
@@ -260,12 +279,112 @@ def test_systemd_snooze_timer_targets_short_fade_service(tmp_path, monkeypatch) 
     calls: list[tuple[str, ...]] = []
     monkeypatch.setattr(timers, "_run", lambda *args, **_kwargs: calls.append(args))
     timers.install(sample_alarm())
-    timers.snooze("weekday-wake", 10)
+    cutoff = datetime(2026, 11, 20, 15, 30, tzinfo=UTC)
+    timers.snooze("weekday-wake", 10, cutoff=cutoff)
     timer = tmp_path / "units/qd35-alarm-weekday-wake-snooze.timer"
     text = timer.read_text(encoding="utf-8")
     assert "OnActiveSec=10min" in text
     assert "Unit=qd35-alarm-weekday-wake-snooze.service" in text
     assert ("restart", "qd35-alarm-weekday-wake-snooze.timer") in calls
+    reloaded = SystemdUserTimers(timers.unit_dir, timers.state_path)
+    assert reloaded.snooze_cutoff("weekday-wake") == cutoff
+
+
+@pytest.mark.parametrize("minute", [7, 20])
+async def test_mcp_snooze_respects_original_nine_thirty_cutoff(tmp_path, monkeypatch, minute):
+    now = datetime(2026, 11, 20, 15, minute, 32, tzinfo=UTC)
+    cutoff = datetime(2026, 11, 20, 15, 30, tzinfo=UTC)
+    monkeypatch.setattr(alarm_module, "datetime", SimpleNamespace(now=lambda _tz: now))
+    plan = sample_alarm(wake_time="09:00", audio_source="/radio.mp3", custom_display=False)
+    store = AlarmStore(tmp_path / "alarms.json")
+    store.save({plan.alarm_id: plan})
+    config = fake_config()
+    timers = FakeTimers()
+    timers.active = True
+    manager = AlarmManager(QD35Service(FakeTransport(), config), config, store, timers)
+
+    result = await manager.snooze(plan.alarm_id, 10)
+
+    assert result["cutoff"] == cutoff.isoformat()
+    assert timers.stopped == [plan.alarm_id]
+    if minute == 7:
+        assert result["snoozed"] is True
+        assert timers.snooze_cutoff(plan.alarm_id) == cutoff
+        assert timers.snoozed == [(plan.alarm_id, 10)]
+    else:
+        assert result["snoozed"] is False
+        assert result["resume_at"] is None
+        assert result["daytime_state"]["rgb_off"] is True
+        assert not timers.snoozed
+
+
+async def test_idle_snooze_does_not_arm_a_timer_and_stop_restores_active_display(tmp_path):
+    plan = sample_alarm()
+    store = AlarmStore(tmp_path / "alarms.json")
+    store.save({plan.alarm_id: plan})
+    config = fake_config(custom_display_firmware=True)
+    service = QD35Service(FakeTransport(), config)
+    timers = FakeTimers()
+    manager = AlarmManager(service, config, store, timers)
+
+    await service.set_light(effect="static", rgb="#FF6A20", brightness=100)
+    assert (await manager.snooze(plan.alarm_id))["reason"] == "alarm is idle"
+    assert not timers.snoozed and not timers.stopped
+
+    timers.active = True
+    result = await manager.stop(plan.alarm_id)
+    assert result["daytime_state"] == {"rgb_off": True, "display_reset_acknowledged": True}
+    assert timers.stopped == [plan.alarm_id]
+
+
+@pytest.mark.parametrize("cancel_first", [False, True])
+async def test_alarm_updates_serialize_across_managers(tmp_path, cancel_first):
+    path = tmp_path / "alarms.json"
+    config = fake_config(timezone_state_path=str(tmp_path / "timezone"))
+    install_started = threading.Event()
+    finish_install = threading.Event()
+
+    class DelayedTimers(FakeTimers):
+        def install(self, alarm):
+            install_started.set()
+            assert finish_install.wait(3)
+            super().install(alarm)
+
+    first = AlarmManager(QD35Service(FakeTransport(), config), config,
+                         AlarmStore(path), DelayedTimers())
+    second = AlarmManager(QD35Service(FakeTransport(), config), config,
+                          AlarmStore(path), FakeTimers())
+    plan = sample_alarm()
+    other = replace(plan, alarm_id="weekend")
+    a = asyncio.create_task(first.store.edit(lambda: first._install_plan(plan)))
+    assert await asyncio.to_thread(install_started.wait, 2)
+    if cancel_first:
+        a.cancel()
+    b = asyncio.create_task(second.store.edit(lambda: second._install_plan(other)))
+    try:
+        await asyncio.sleep(0.1)
+        assert set(first.store.load()) == {plan.alarm_id}
+        assert not b.done()
+    finally:
+        finish_install.set()
+        results = await asyncio.gather(a, b, return_exceptions=True)
+    assert isinstance(results[0], asyncio.CancelledError) if cancel_first else results[0] is None
+    assert results[1] is None
+    assert set(first.store.load()) == {plan.alarm_id, other.alarm_id}
+
+
+def test_systemd_state_reports_active_snooze_playback(tmp_path, monkeypatch) -> None:
+    timers = SystemdUserTimers(tmp_path, tmp_path / "alarms.json")
+
+    def systemctl(*arguments, **_kwargs):
+        playing = arguments == ("is-active", "qd35-alarm-weekday-wake-snooze.service")
+        return SimpleNamespace(stdout="active\n" if playing else "")
+
+    monkeypatch.setattr(timers, "_run", systemctl)
+    state = timers.state("weekday-wake")
+    assert state["service_active"] is True
+    assert state["snooze_service_active"] is True
+    assert state["snooze_active"] is False
 
 
 def test_physical_snooze_schedules_without_stopping_its_own_service(
@@ -333,3 +452,33 @@ async def test_failed_alarm_update_restores_previous_timer_and_state(tmp_path):
         await manager.create(old.name, *args)
     assert timers.installed == [old]
     assert store.load() == {old.alarm_id: old}
+
+
+async def test_fade_out_minutes_defaults_persists_and_validates(tmp_path) -> None:
+    raw = sample_alarm().to_dict()
+    raw.pop("fade_out_minutes", None)
+    loaded = SunriseAlarm.from_dict(raw)
+    assert loaded.fade_out_minutes == 2
+
+    config = fake_config(
+        alarm_state_path=str(tmp_path / "alarms.json"),
+        timezone_state_path=str(tmp_path / "timezone.json"),
+    )
+    store = AlarmStore(tmp_path / "alarms.json")
+    timers = FakeTimers()
+    manager = AlarmManager(
+        QD35Service(FakeTransport(), config),
+        config,
+        store=store,
+        timers=timers,  # type: ignore[arg-type]
+    )
+    args = ("07:00", None, "America/Regina", ["mon"], 30, 0, 100, "#FF6A20", "12h", None, 10, 4)
+    for bad_value in (-1, 61):
+        with pytest.raises(ValueError, match="fade_out_minutes"):
+            await manager.create("Custom Fade", *args, fade_out_minutes=bad_value)
+
+    created = await manager.create("Custom Fade", *args, fade_out_minutes=5)
+    assert created["fade_out_minutes"] == 5
+    assert store.load()["custom-fade"].fade_out_minutes == 5
+    zeroed = await manager.create("Zero Fade", *args, post_wake_minutes=0, fade_out_minutes=2)
+    assert zeroed["fade_out_minutes"] == 2

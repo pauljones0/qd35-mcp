@@ -13,15 +13,15 @@ checks for expiry during its normal polling loop. If an alarm process crashes,
 its lease still expires and the worker releases its Classic connection.
 
 Normal cleanup disconnects Classic only if the finishing run still owns its token.
-Snooze extends the lease for the retry, and a newer run gets a new token. An explicit
+Scheduled snoozes keep the original lease deadline. A newer run gets a new token. An explicit
 manual keepalive takes precedence over automatic release. Stopping or deleting an
 alarm cancels its lease without sending a disconnect. The worker stays idle when
 there are no claims. No pairing or speaker power changes are part of this workflow.
 
-Two simultaneous runs targeting the same speaker are rejected at runtime. This also
-covers overlapping manual starts and snoozes. Schedule creation can still save
-overlapping plans. Physical BLE transactions lock one speaker through write and
-readback, so other same-user MCP processes can work between alarm steps.
+Each speaker runs one alarm at a time. Scheduled wake runs can briefly wait for
+an in-progress cleanup to finish. Schedule creation can still save overlapping
+plans. Schedule edits are serialized across MCP processes, and BLE transactions
+hold a per-speaker lock through write and readback.
 
 On the tested QD35/BlueZ combination, a deliberate host-side disconnect changed BlueZ's `Paired` field back to `no` even though the trusted device record remained. The keepalive therefore attempts `connect` whenever the endpoint is disconnected instead of incorrectly requiring `Paired: yes`; BlueZ and the speaker re-established the ephemeral pairing and A2DP sink in 34 seconds during the live resilience check.
 
@@ -42,6 +42,10 @@ before sleep rather than when the sunrise begins. Neither inspected Edifier Conn
 version exposes a prompt-tone disable command, so preventing a morning reconnect is
 the only verified silent approach.
 
+Scheduled bedtime preparation retries transient failures before the sunrise starts.
+RGB and front-display commands are attempted separately, so either can succeed if
+the other fails.
+
 During a run it:
 
 1. Attempts to synchronize the speaker clock and requested 12/24-hour display.
@@ -50,38 +54,46 @@ During a run it:
    rises slowly at first so the apparent brightness does not jump at the beginning.
 3. Applies the same perceptual curve to the patched front display's eight hardware
    levels (0–7), restoring the logo and status symbols at the beginning of sunrise.
-4. Checks the Classic endpoint when audio is due, mutes hardware volume, and selects
-   Bluetooth input if needed. It starts `mpv` at 50% software gain and checks that
-   an audio stream is actually linked to the named QD35 PipeWire sink before fading in.
+4. Checks the Classic endpoint when audio is due and selects Bluetooth input.
+   It starts `mpv` at zero software gain and verifies that its stream is linked
+   to the named QD35 PipeWire sink before fading in.
    If playback fails to start or exits during sunrise, the runner makes up to three
    attempts in total.
-5. Ramps the speaker's hardware volume linearly from zero to the requested target;
-   this is intentionally separate because the speaker's volume steps already use
-   an audio-style response. The target is
-   capped at 8/16; new alarms default to a bedside-safe 4/16.
-6. Leaves a radio stream running until `qd35_stop_alarm` or
-   `qd35_snooze_alarm` is called, or until the configured post-wake window expires.
-7. By default, 30 minutes after wake time it stops the player and releases the host's
-   Classic connection if the finishing alarm still owns it.
+5. Verifies the speaker's target volume and sets it once if necessary. Then it
+   ramps `mpv` from zero to 50% software gain. Repeated speaker volume commands
+   would make the QD35 replace the sunrise RGB frame with its volume bar.
+   The speaker target is capped at 8/16. New alarms default to 4/16.
+6. Leaves a radio stream running until Stop, Snooze, or the configured cutoff.
+   If the player exits early after the fade, the runner tries up to two restarts
+   within the remaining window.
+7. By default, 30 minutes after wake time it fades `mpv` audio gain and the sunrise RGB
+   light smoothly down to zero over the final 2 minutes (`fade_out_minutes=2`) without
+   issuing repeated hardware volume writes, then stops the player, sets RGB to zero, and
+   restores the normal clock, wordmark and status display on patched speakers.
+   Playback stops at the cutoff even if a Bluetooth control request is pending.
+   The runner releases Classic after cleanup if it still owns the connection.
 
 Lighting-only alarms exit after the ramp. The runner logs clock, lighting, and audio
-failures separately. Audio still requires a verified mute and Bluetooth input.
-Stopping an alarm terminates its player without sending a Bluetooth disconnect command.
+failures separately. Audio fades only after the Bluetooth input and audio route
+are verified.
+Stopping or snoozing an active alarm still halts playback and darkens or restores the
+speaker immediately without waiting for the shutoff fade.
 
 ## Snooze
 
 `qd35_snooze_alarm(alarm_id, minutes=10)` stops the active systemd service and its
 `mpv` child immediately, returns RGB to zero, and restores the fully dark night
-state. It installs a one-shot user timer for 1–60 minutes. During the sunrise ramp,
-an unsolicited volume, input, EQ, or lighting notification is checked against a fresh
-speaker read. A confirmed change invokes the same flow with the configured snooze
-duration (ten minutes by default). Playback-only changes and button presses that
-leave the setting unchanged are ignored because they cannot be distinguished from
-automatic or duplicate notifications. Each snooze rearms the timer. When it fires,
-a dedicated snooze service performs a short two-minute RGB/front-display
-and radio-volume fade instead of replaying the entire 30-minute sunrise. The regular
-recurring alarm timer is unchanged, and neither snooze nor stop sends the speaker's
-Bluetooth-disconnect command.
+state. It only schedules a timer for an active alarm or a pending snooze. During the sunrise ramp
+and the radio playback that follows, an unsolicited volume, input, EQ, or lighting
+notification is checked against a fresh speaker read. A confirmed change invokes the
+same flow with the configured snooze duration (ten minutes by default). Playback-only
+changes and button presses that leave the setting unchanged are ignored because they
+cannot be distinguished from automatic or duplicate notifications. The listener
+reinitializes its subscription after a BLE dropout. When the snooze
+timer fires, its service runs a short two-minute RGB, display and radio fade. Every
+retry keeps the original scheduled cutoff. If the requested retry would start at or
+after that cutoff, the alarm ends with RGB off and the ordinary front display.
+The next recurring alarm stays on its regular schedule.
 
 ## Audio sources
 

@@ -295,6 +295,15 @@ Classic A2DP remained active.
 
 ## Safety and remaining validation
 
+During the November 20 sunrise, a Bluetooth trace showed gradual RGB brightness
+commands and a hardware volume write to 5 during the audio fade. The owner
+reported the flash at each volume increase. In firmware replay, `+VOL+005`
+replaced the lit 37-pixel static frame with a six-pixel volume indicator and
+restored the static frame after the indicator expired. The alarm now fades the
+player's software gain while leaving the speaker at its target volume. The
+replacement fade passed an mpv test with null audio output and a scheduler
+regression test. Its next physical sunrise remains to be observed.
+
 Firmware 1.3.0 is the version reported by the tested speaker. The signed OTA lookup
 returned the official 40,471-byte Cortex-M image and offered no newer version at
 the time of testing. The MCP exposes only fixed-purpose, gated patch install and
